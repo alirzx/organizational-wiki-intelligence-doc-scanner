@@ -1,7 +1,7 @@
 import asyncio
 from uuid import uuid4
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 
 from app.api.v1.request_parsing import (
     parse_json_object,
@@ -21,6 +21,7 @@ from app.schemas.extraction import DocumentExtractionResponse
 from app.schemas.image import PageDescriptor
 from app.schemas.status import ProcessingState
 from app.schemas.storage import ExtractionJobResponse, MinioDocumentRequest
+from app.security import verify_backend_api_key
 from app.storage.minio_service import MinioConfigurationError, MinioStorageError, MinioUrlError
 from app.utils.ids import new_request_id
 
@@ -33,10 +34,7 @@ publisher = get_artifact_publisher()
 
 def _validate_minio_request(payload: MinioDocumentRequest) -> None:
     if len(payload.pages) > settings.max_pages_per_document:
-        raise HTTPException(
-            status_code=422,
-            detail=f"document exceeds max_pages_per_document={settings.max_pages_per_document}",
-        )
+        raise HTTPException(status_code=422, detail=f"document exceeds max_pages_per_document={settings.max_pages_per_document}")
     expected_prefix = f"documents/{payload.document_id}/images/"
     for item in payload.pages:
         try:
@@ -48,10 +46,7 @@ def _validate_minio_request(payload: MinioDocumentRequest) -> None:
         if not ref.object_key.startswith(expected_prefix):
             raise HTTPException(
                 status_code=422,
-                detail=(
-                    f"page image must be under {expected_prefix!r}; "
-                    f"received object {ref.object_key!r}"
-                ),
+                detail=f"page image must be under {expected_prefix!r}; received object {ref.object_key!r}",
             )
 
 
@@ -83,9 +78,7 @@ def _processing_error(run) -> str:
     for page in run.response.pages:
         for module, module_status in page.modules.items():
             if module_status.state == ProcessingState.FAILED:
-                failures.append(
-                    f"page {page.page_number} {module.value}: {module_status.error or 'processing failed'}"
-                )
+                failures.append(f"page {page.page_number} {module.value}: {module_status.error or 'processing failed'}")
     return "; ".join(failures) or f"document processing state={run.response.processing.state.value}"
 
 
@@ -102,7 +95,7 @@ async def _publish_debug_run(run) -> None:
 
 @router.post("/extract", response_model=DocumentExtractionResponse, summary="Run full extraction for uploaded local images")
 async def extract_document(
-    images: list[UploadFile] = File(..., description="1..N page images in document order."),
+    images: list[UploadFile] = File(...),
     document_id: str = Form(...),
     document_metadata_json: str | None = Form(None),
     pages_metadata_json: str | None = Form(None),
@@ -117,27 +110,19 @@ async def extract_document(
     descriptors = parse_page_descriptors(pages_metadata_json, len(images))
     pages = []
     for index, (upload, descriptor) in enumerate(zip(images, descriptors, strict=True), start=1):
-        pages.append(
-            await prepare_uploaded_page(
-                upload=upload,
-                document_id=document_id,
-                descriptor=descriptor,
-                fallback_page_number=index,
-                settings=settings,
-            )
-        )
+        pages.append(await prepare_uploaded_page(
+            upload=upload,
+            document_id=document_id,
+            descriptor=descriptor,
+            fallback_page_number=index,
+            settings=settings,
+        ))
     if not persist_outputs:
         return await orchestrator.extract_document(
-            document_id=document_id,
-            pages=pages,
-            request_id=request_id,
-            document_metadata=document_metadata,
+            document_id=document_id, pages=pages, request_id=request_id, document_metadata=document_metadata
         )
     run = await orchestrator.extract_document_run(
-        document_id=document_id,
-        pages=pages,
-        request_id=request_id,
-        document_metadata=document_metadata,
+        document_id=document_id, pages=pages, request_id=request_id, document_metadata=document_metadata
     )
     await _publish_debug_run(run)
     return run.response
@@ -147,17 +132,8 @@ async def extract_document(
     "/extract/minio",
     response_model=ExtractionJobResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(verify_backend_api_key)],
     summary="Accept one MinIO-backed document for asynchronous extraction",
-    description=(
-        "Primary Backend -> AI production workflow. The request schema is unchanged: document_id plus "
-        "page image URLs. The API validates the contract, creates a durable job record, enqueues Celery "
-        "processing, and returns HTTP 202 without waiting for model inference or MinIO artifact writes."
-    ),
-    responses={
-        202: {"description": "Job accepted and queued"},
-        422: {"description": "Invalid request, MinIO URL, or document identifier"},
-        503: {"description": "Job queue/state storage unavailable or misconfigured"},
-    },
 )
 async def extract_minio_document(payload: MinioDocumentRequest):
     _validate_minio_request(payload)
@@ -172,11 +148,7 @@ async def extract_minio_document(payload: MinioDocumentRequest):
         )
     except Exception as exc:
         try:
-            job_store.update(
-                job_id,
-                status="failed",
-                error={"code": "QUEUE_UNAVAILABLE", "message": str(exc)},
-            )
+            job_store.update(job_id, status="failed", error={"code": "QUEUE_UNAVAILABLE", "message": str(exc)})
         except Exception:
             pass
         raise HTTPException(status_code=503, detail=f"could not enqueue extraction job: {exc}") from exc

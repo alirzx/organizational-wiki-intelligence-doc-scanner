@@ -20,12 +20,7 @@ MODULE_DIRS = {
 
 
 class ArtifactPublisher:
-    """Build and persist deterministic extraction artifacts for one document.
-
-    The publisher owns only the three AI output prefixes and the document-level
-    ``OCR.txt`` compatibility artifact. Backend-owned source objects such as
-    ``original.pdf``, ``main.txt`` and ``images/`` are never modified.
-    """
+    """Persist deterministic AI-owned artifacts for one document."""
 
     def __init__(self, storage: MinioStorageService):
         self.storage = storage
@@ -63,6 +58,41 @@ class ArtifactPublisher:
         buffer = BytesIO()
         crop.save(buffer, format="PNG")
         return buffer.getvalue()
+
+    @staticmethod
+    def _layout_document(run: DocumentRunResult) -> dict:
+        pages: list[dict] = []
+        for page_run in sorted(run.pages, key=lambda item: item.response.page_number):
+            ocr_result = page_run.modules.get(ModuleName.OCR)
+            paragraphs = [] if ocr_result is None else [
+                obj for obj in ocr_result.objects if obj.type == ObjectType.PARAGRAPH
+            ]
+            # Deterministic top-to-bottom reading order. Within the same visual row,
+            # preserve OCR geometry ordering by x coordinate.
+            paragraphs.sort(key=lambda obj: (obj.bbox.y1, obj.bbox.x1, obj.object_id))
+            blocks = [
+                {
+                    "object_id": obj.object_id,
+                    "type": obj.type.value,
+                    "bbox": obj.bbox.model_dump(mode="json"),
+                    "reading_order": index,
+                    "text": obj.raw_text or obj.text,
+                    "confidence": obj.confidence,
+                }
+                for index, obj in enumerate(paragraphs, start=1)
+            ]
+            pages.append(
+                {
+                    "page_id": page_run.response.page_id,
+                    "page_number": page_run.response.page_number,
+                    "blocks": blocks,
+                }
+            )
+        return {
+            "schema_version": "wiki-hami.layout.v1",
+            "document_id": run.response.document_id,
+            "pages": pages,
+        }
 
     def _cleanup_owned_prefixes(self, document_prefix: str) -> None:
         for directory in MODULE_DIRS.values():
@@ -123,12 +153,18 @@ class ArtifactPublisher:
                     )
                     written.append(crop_key)
 
-        # Backend compatibility artifact documented in the integration contract.
-        # Per-page OCR files remain the canonical granular outputs under OCR/.
         aggregate_key = f"{document_prefix}/OCR.txt"
         aggregate_text = "\n\n".join(text for text in aggregate_ocr_pages if text).strip()
         if aggregate_text:
             aggregate_text += "\n"
         self.storage.put_text(aggregate_key, aggregate_text)
         written.append(aggregate_key)
+
+        layout_key = f"{document_prefix}/layout.json"
+        self.storage.put_text(
+            layout_key,
+            self._json_text(self._layout_document(run)),
+            content_type="application/json; charset=utf-8",
+        )
+        written.append(layout_key)
         return written
