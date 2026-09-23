@@ -2,7 +2,6 @@
 
 import os
 
-
 os.environ["WIKI_HAMI_OCR_BACKEND"] = "mock"
 os.environ["WIKI_HAMI_FIGURE_TABLE_BACKEND"] = "mock"
 os.environ["WIKI_HAMI_STAMP_SIGNATURE_BACKEND"] = "mock"
@@ -12,3 +11,6 @@ os.environ["WIKI_HAMI_MINIO_PUBLIC_BASE_URL"] = "http://minio.test:9000"
 os.environ["WIKI_HAMI_MINIO_BUCKET"] = "media"
 os.environ["WIKI_HAMI_MINIO_ACCESS_KEY"] = "test-access"
 os.environ["WIKI_HAMI_MINIO_SECRET_KEY"] = "test-secret"
+os.environ["WIKI_HAMI_JOB_STORE_BACKEND"] = "memory"
+os.environ["WIKI_HAMI_CALLBACK_URL"] = ""
+os.environ["WIKI_HAMI_BACKEND_API_KEY"] = ""
