@@ -6,38 +6,23 @@ from app.core.config import get_settings
 settings = get_settings()
 
 TAGS_METADATA = [
-    {
-        "name": "OCR",
-        "description": "Engineering OCR endpoint for one MinIO image. Production document processing uses /extract/minio.",
-    },
-    {
-        "name": "Figure / Table",
-        "description": "Engineering PP-DocLayout endpoint for one MinIO image. Production document processing uses /extract/minio.",
-    },
-    {
-        "name": "Stamp / Signature",
-        "description": "Engineering RF-DETR endpoint for one MinIO image. Production document processing uses /extract/minio.",
-    },
-    {
-        "name": "Full Extraction",
-        "description": "Production MinIO document workflow plus local/debug full-extraction paths.",
-    },
-    {
-        "name": "MinIO / Dev Storage",
-        "description": "MinIO connectivity, object listing, and preview endpoints used by internal inspection tooling.",
-    },
+    {"name": "OCR", "description": "Engineering OCR endpoint for one MinIO image."},
+    {"name": "Figure / Table", "description": "Engineering PP-DocLayout endpoint for one MinIO image."},
+    {"name": "Stamp / Signature", "description": "Engineering RF-DETR endpoint for one MinIO image."},
+    {"name": "Full Extraction", "description": "Async production MinIO workflow plus synchronous local/debug extraction."},
+    {"name": "Async Jobs", "description": "Durable asynchronous extraction status and recovery."},
+    {"name": "MinIO / Dev Storage", "description": "MinIO connectivity, object listing, and preview endpoints for internal inspection."},
     {"name": "Health", "description": "Process and configuration liveness."},
 ]
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.3.0",
+    version="0.4.0",
     description=(
-        "Wiki Hami Extraction V1. The primary product integration is POST /api/v1/extract/minio: "
-        "the backend sends all MinIO-backed page images for one document, Wiki Hami runs OCR, "
-        "figure/table and stamp/signature extraction, persists AI-owned artifacts back to MinIO, "
-        "and returns a small success/failed status response. Local multipart upload and detailed "
-        "MinIO inspection remain available for engineering and Streamlit workflows."
+        "Wiki Hami Extraction V1. POST /api/v1/extract/minio validates the existing document/page MinIO request, "
+        "creates a durable asynchronous job and returns HTTP 202 + job_id. Celery workers run OCR, figure/table "
+        "and stamp/signature extraction, persist OCR.txt, layout.json and per-page artifacts to MinIO, then send "
+        "a terminal callback to Backend. GET /api/v1/jobs/{job_id} provides polling/recovery."
     ),
     openapi_tags=TAGS_METADATA,
 )
@@ -52,4 +37,5 @@ async def root():
         "health": f"{settings.api_prefix}/health",
         "minio_health": f"{settings.api_prefix}/storage/minio/health",
         "product_extract": f"{settings.api_prefix}/extract/minio",
+        "job_status": f"{settings.api_prefix}/jobs/<job_id>",
     }
