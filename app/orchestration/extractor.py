@@ -1,5 +1,6 @@
 import asyncio
 from collections import Counter
+from dataclasses import dataclass
 from time import perf_counter
 
 from app.core.config import Settings
@@ -10,6 +11,19 @@ from app.preprocessing.types import PreparedPage
 from app.schemas.detection import DetectedObject, ObjectType
 from app.schemas.extraction import DocumentExtractionResponse, ModulePageResponse, PageExtractionResponse
 from app.schemas.status import ModuleName, ModuleStatus, ProcessingState, ProcessingStatus
+
+
+@dataclass
+class PageRunResult:
+    page: PreparedPage
+    modules: dict[ModuleName, ModulePageResponse | None]
+    response: PageExtractionResponse
+
+
+@dataclass
+class DocumentRunResult:
+    response: DocumentExtractionResponse
+    pages: list[PageRunResult]
 
 
 class ExtractionOrchestrator:
@@ -44,7 +58,7 @@ class ExtractionOrchestrator:
             error=f"{type(exc).__name__}: {exc}",
         )
 
-    async def _run_page(self, page: PreparedPage, request_id: str) -> PageExtractionResponse:
+    async def _run_page(self, page: PreparedPage, request_id: str) -> PageRunResult:
         async with self._page_semaphore:
             started = perf_counter()
             jobs = [
@@ -64,14 +78,17 @@ class ExtractionOrchestrator:
             objects: list[DetectedObject] = []
             warnings: list[str] = []
             module_map: dict[ModuleName, ModuleStatus] = {}
+            module_results: dict[ModuleName, ModulePageResponse | None] = {}
 
             for (module_name, _), result in zip(jobs, raw_results, strict=True):
                 if isinstance(result, BaseException):
                     status = self._failure_status(module_name, result)
+                    module_results[module_name] = None
                     warnings.append(f"{module_name.value}_failed")
                 else:
                     assert isinstance(result, ModulePageResponse)
                     status = result.status
+                    module_results[module_name] = result
                     objects.extend(result.objects)
                     warnings.extend(result.status.warnings)
                 statuses.append(status)
@@ -79,7 +96,7 @@ class ExtractionOrchestrator:
 
             objects.sort(key=lambda x: (x.bbox.y1, x.bbox.x1, x.type.value))
             duration = (perf_counter() - started) * 1000
-            return PageExtractionResponse(
+            response = PageExtractionResponse(
                 schema_version=self.settings.schema_version,
                 request_id=request_id,
                 document_id=page.document_id,
@@ -96,20 +113,22 @@ class ExtractionOrchestrator:
                     warnings=warnings,
                 ),
             )
+            return PageRunResult(page=page, modules=module_results, response=response)
 
-    async def extract_document(
+    async def extract_document_run(
         self,
         *,
         document_id: str,
         pages: list[PreparedPage],
         request_id: str,
         document_metadata: dict,
-    ) -> DocumentExtractionResponse:
+    ) -> DocumentRunResult:
         started = perf_counter()
-        page_results = await asyncio.gather(
+        page_runs = await asyncio.gather(
             *(self._run_page(page, request_id) for page in pages)
         )
-        page_results = sorted(page_results, key=lambda p: p.page_number)
+        page_runs = sorted(page_runs, key=lambda item: item.response.page_number)
+        page_results = [item.response for item in page_runs]
 
         objects = [obj for page in page_results for obj in page.objects]
         objects.sort(key=lambda x: (x.page_number, x.bbox.y1, x.bbox.x1, x.type.value))
@@ -132,7 +151,7 @@ class ExtractionOrchestrator:
         ]
         duration = (perf_counter() - started) * 1000
 
-        return DocumentExtractionResponse(
+        response = DocumentExtractionResponse(
             schema_version=self.settings.schema_version,
             request_id=request_id,
             document_id=document_id,
@@ -147,3 +166,21 @@ class ExtractionOrchestrator:
                 warnings=warnings,
             ),
         )
+        return DocumentRunResult(response=response, pages=page_runs)
+
+    async def extract_document(
+        self,
+        *,
+        document_id: str,
+        pages: list[PreparedPage],
+        request_id: str,
+        document_metadata: dict,
+    ) -> DocumentExtractionResponse:
+        """Backward-compatible merged extraction response used by local/dev callers."""
+        run = await self.extract_document_run(
+            document_id=document_id,
+            pages=pages,
+            request_id=request_id,
+            document_metadata=document_metadata,
+        )
+        return run.response

@@ -1,7 +1,8 @@
-"""Process-local service registry for reusable model and storage backends."""
+"""Process-local service registry for reusable model, storage and workflow backends."""
 
 from functools import lru_cache
 
+from app.artifacts.publisher import ArtifactPublisher
 from app.core.config import get_settings
 from app.modules.figure_table.service import FigureTableService
 from app.modules.ocr.service import OCRService
@@ -28,6 +29,11 @@ def get_stamp_signature_service() -> StampSignatureService:
 @lru_cache
 def get_minio_storage_service() -> MinioStorageService:
     return MinioStorageService(get_settings())
+
+
+@lru_cache
+def get_artifact_publisher() -> ArtifactPublisher:
+    return ArtifactPublisher(get_minio_storage_service())
 
 
 @lru_cache

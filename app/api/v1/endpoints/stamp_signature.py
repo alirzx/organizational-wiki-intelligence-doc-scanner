@@ -19,9 +19,10 @@ storage = get_minio_storage_service()
     response_model=ModulePageResponse,
     summary="Detect stamps and signatures for one MinIO image",
     description=(
-        "Production mark-detection endpoint. Send one backend-provided MinIO image URL. "
-        "Wiki Hami retrieves the configured object through MinIO, applies shared preprocessing, "
-        "runs the CPU-configured RF-DETR pipeline, and returns only stamp/signature objects."
+        "Engineering/debug mark-detection endpoint. Send one MinIO image URL to exercise the same "
+        "RF-DETR service used by the product document workflow. Wiki Hami validates and reads the "
+        "object through MinIO, applies shared preprocessing and returns canonical stamp/signature "
+        "objects. Product backend integration uses /extract/minio."
     ),
     responses={
         404: {"description": "MinIO object not found"},

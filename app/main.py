@@ -8,35 +8,36 @@ settings = get_settings()
 TAGS_METADATA = [
     {
         "name": "OCR",
-        "description": "Production OCR pipeline. Accepts a validated MinIO image URL and returns canonical paragraph objects.",
+        "description": "Engineering OCR endpoint for one MinIO image. Production document processing uses /extract/minio.",
     },
     {
         "name": "Figure / Table",
-        "description": "Production PP-DocLayout pipeline for canonical figure and table regions from a MinIO image URL.",
+        "description": "Engineering PP-DocLayout endpoint for one MinIO image. Production document processing uses /extract/minio.",
     },
     {
         "name": "Stamp / Signature",
-        "description": "Production RF-DETR pipeline for canonical stamp and signature regions from a MinIO image URL.",
+        "description": "Engineering RF-DETR endpoint for one MinIO image. Production document processing uses /extract/minio.",
     },
     {
         "name": "Full Extraction",
-        "description": "Local/E2E workflows that run all three model pipelines for uploaded pages or MinIO URLs.",
+        "description": "Production MinIO document workflow plus local/debug full-extraction paths.",
     },
     {
         "name": "MinIO / Dev Storage",
-        "description": "MinIO connectivity, object listing, and preview endpoints used by the local inspection UI.",
+        "description": "MinIO connectivity, object listing, and preview endpoints used by internal inspection tooling.",
     },
     {"name": "Health", "description": "Process and configuration liveness."},
 ]
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.2.0",
+    version="0.3.0",
     description=(
-        "Wiki Hami Extraction V1. Product integrations call the independent OCR, Figure/Table, "
-        "and Stamp/Signature APIs with a MinIO object URL. Local development can still upload "
-        "images through /extract or exercise the same MinIO acquisition path through /extract/minio. "
-        "All detections are returned in EXIF-corrected source-image pixel coordinates."
+        "Wiki Hami Extraction V1. The primary product integration is POST /api/v1/extract/minio: "
+        "the backend sends all MinIO-backed page images for one document, Wiki Hami runs OCR, "
+        "figure/table and stamp/signature extraction, persists AI-owned artifacts back to MinIO, "
+        "and returns a small success/failed status response. Local multipart upload and detailed "
+        "MinIO inspection remain available for engineering and Streamlit workflows."
     ),
     openapi_tags=TAGS_METADATA,
 )
@@ -50,4 +51,5 @@ async def root():
         "docs": "/docs",
         "health": f"{settings.api_prefix}/health",
         "minio_health": f"{settings.api_prefix}/storage/minio/health",
+        "product_extract": f"{settings.api_prefix}/extract/minio",
     }

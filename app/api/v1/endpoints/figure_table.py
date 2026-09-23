@@ -19,9 +19,10 @@ storage = get_minio_storage_service()
     response_model=ModulePageResponse,
     summary="Detect figures and tables for one MinIO image",
     description=(
-        "Production layout endpoint. Send one backend-provided MinIO image URL. Wiki Hami "
-        "resolves the configured bucket/object through MinIO, applies the shared preprocessing "
-        "pipeline, runs PP-DocLayoutV3, and returns only canonical figure/table objects."
+        "Engineering/debug layout endpoint. Send one MinIO image URL to exercise the same "
+        "PP-DocLayoutV3 service used by the product document workflow. Wiki Hami validates and "
+        "reads the object through MinIO, applies shared preprocessing and returns canonical "
+        "figure/table objects. Product backend integration uses /extract/minio."
     ),
     responses={
         404: {"description": "MinIO object not found"},

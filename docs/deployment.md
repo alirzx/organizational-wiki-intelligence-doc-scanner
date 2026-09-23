@@ -2,10 +2,10 @@
 
 ## Runtime topology
 
-The normal deployment remains one FastAPI process plus optional Streamlit. MinIO is an external S3 dependency; Wiki Hami does not require MinIO to run in the same Compose project.
+The normal deployment remains one FastAPI process plus optional Streamlit. MinIO is an external/shared S3 dependency; Wiki Hami does not require MinIO to run in the same Compose project, but the API container must be able to reach the configured S3 endpoint.
 
 ```text
-Product backend -> Wiki Hami API -> MinIO/S3
+Django / Celery -> Wiki Hami API <-> MinIO/S3
                            |
                     three CPU models
 ```
@@ -29,7 +29,7 @@ source .venv/bin/activate
 python run.py --web
 ```
 
-The base requirements now include the official `minio` Python SDK.
+The base requirements include the official `minio` Python SDK.
 
 ## Real CPU model dependencies
 
@@ -56,56 +56,90 @@ WIKI_HAMI_STAMP_SIGNATURE_DEVICE=cpu
 
 ## MinIO configuration
 
-Example when MinIO listens on `9000` inside its Docker network but is published to clients as host port `9002`:
+The current Backend contract sends image URLs such as:
+
+```text
+http://minio:9000/media/documents/123/images/page-001.jpg
+```
+
+Therefore server configuration should match that URL authority/bucket:
 
 ```env
 WIKI_HAMI_MINIO_ENABLED=true
 WIKI_HAMI_MINIO_ENDPOINT=minio:9000
-WIKI_HAMI_MINIO_PUBLIC_BASE_URL=http://192.168.x.x:9002
+WIKI_HAMI_MINIO_PUBLIC_BASE_URL=http://minio:9000
 WIKI_HAMI_MINIO_ACCESS_KEY=<secret>
 WIKI_HAMI_MINIO_SECRET_KEY=<secret>
 WIKI_HAMI_MINIO_SECURE=false
-WIKI_HAMI_MINIO_BUCKET=wiki-documents
+WIKI_HAMI_MINIO_BUCKET=media
 ```
 
-If Wiki Hami is not on the MinIO Docker network, set `MINIO_ENDPOINT` to whatever host/port is reachable from the Wiki Hami container. Do not assume that the backend-facing published port and the API-to-MinIO port are identical.
+For local development through the host-exposed S3 port:
 
-The public base URL is a validation policy for URLs sent by the backend. The API never treats those URLs as arbitrary HTTP download targets; object bytes are read via the configured MinIO client.
+```env
+WIKI_HAMI_MINIO_ENABLED=true
+WIKI_HAMI_MINIO_ENDPOINT=192.168.4.209:9002
+WIKI_HAMI_MINIO_PUBLIC_BASE_URL=http://192.168.4.209:9002
+WIKI_HAMI_MINIO_ACCESS_KEY=<secret>
+WIKI_HAMI_MINIO_SECRET_KEY=<secret>
+WIKI_HAMI_MINIO_SECURE=false
+WIKI_HAMI_MINIO_BUCKET=media
+```
 
-Credentials belong in deployment secrets/GitLab `ENV_FILE`, never in source control.
+The Console port (for example 9003) is not used by Wiki Hami.
+
+`MINIO_PUBLIC_BASE_URL` is also the strict validation policy for backend-provided image URLs. The API never treats those URLs as arbitrary HTTP download targets; bucket/object bytes are read through the configured MinIO SDK client.
+
+Credentials belong in deployment secrets/GitLab `ENV_FILE`, never source control.
+
+### Required MinIO permissions
+
+The AI account is no longer read-only. Product `/extract/minio` writes artifacts and cleans old AI-owned prefixes before a retry. The credential therefore needs the equivalent of:
+
+```text
+ListBucket
+GetObject
+PutObject
+DeleteObject
+```
+
+Scope delete permission to the Wiki Hami AI-owned output area where possible:
+
+```text
+documents/*/OCR/*
+documents/*/Figure-Table/*
+documents/*/Stamp-Signature/*
+```
+
+`documents/*/OCR.txt` also needs write permission. Backend-owned `images/`, `main.txt`, and `original.pdf` are never deleted by the application.
 
 ## Docker image
 
-No special Dockerfile change is required for storage. The existing Dockerfile installs `requirements.txt` (directly or through `requirements-models.txt`), so the MinIO SDK is included automatically.
+No model/device Dockerfile change is required. The MinIO SDK is already installed through the Python requirements.
 
 ```bash
-docker build -t wiki-hami-extraction:0.2.0 .
+docker build -t wiki-hami-extraction:0.3.0 .
 ```
 
-The image continues to expose 8000/8501 and uses `/api/v1/health` for liveness. Liveness does not load models or contact MinIO. Use `/api/v1/storage/minio/health` when storage connectivity must be checked explicitly.
+The image exposes 8000/8501 and uses `/api/v1/health` for liveness. Liveness does not load models or contact MinIO. Use `/api/v1/storage/minio/health` when storage connectivity must be checked explicitly.
 
-## Compose
+## Compose / GitLab deployment
 
-Both `compose.yaml` and `deployment/compose.prod.yaml` already use `env_file: .env`/`../.env`; therefore the new `WIKI_HAMI_MINIO_*` settings are injected without structural Compose changes.
+The existing DevOps-owned Compose and GitLab CI files remain structurally unchanged. Compose loads `.env`; GitLab copies the `ENV_FILE` variable to the server before running `docker compose up --build -d`.
 
-Production-style startup remains:
+When MinIO endpoint/bucket/credentials change, update GitLab `ENV_FILE` and start a new pipeline on `main` so the new `.env` is copied and containers are recreated with the new configuration.
 
-```bash
-mkdir -p /var/lib/wiki-hami/cache /var/lib/wiki-hami/outputs
-docker compose -f deployment/compose.prod.yaml up -d
-```
-
-Model cache paths remain persistent:
-
-- Hugging Face/RF-DETR: `HF_HOME`;
-- Paddle runtime: `PADDLE_HOME`;
-- PaddleX official models: `PADDLE_PDX_CACHE_HOME`.
-
-MinIO document images remain in object storage and are read per request; they are not copied into those framework caches.
+Do not modify Compose network ownership from application code. The API container simply requires DNS/network reachability to `minio:9000` on the DevOps-provided network.
 
 ## Production versus local storage browser
 
-The product backend needs only the three module endpoints. The Streamlit inspector additionally uses MinIO health/list/object-proxy routes for browsing and preview.
+The Backend product integration needs:
+
+```text
+POST /api/v1/extract/minio
+```
+
+The isolated model and detailed inspection endpoints are engineering surfaces. Streamlit additionally uses MinIO health/list/object-proxy routes for browsing and preview.
 
 Set:
 
@@ -113,19 +147,22 @@ Set:
 WIKI_HAMI_MINIO_BROWSER_ENABLED=false
 ```
 
-when those internal inspection endpoints should not be available in a production environment. If Streamlit is intentionally deployed as an internal engineering console, the flag may remain enabled behind the appropriate network/access controls.
+when MinIO list/object proxy endpoints should not be exposed in production. If Streamlit is intentionally deployed as an internal engineering console, the flag may remain enabled behind appropriate network/access controls.
 
 ## First run
 
 1. API starts without loading model weights.
-2. `/api/v1/health` can become healthy immediately.
-3. MinIO-backed requests first acquire the image object, validate/decode it, then initialize the selected model if needed.
-4. First real model inference downloads missing weights into the persistent framework cache.
-5. Later requests reuse both on-disk weights and the in-memory model instance.
-6. Container restart reconstructs models from the persistent cache; MinIO source objects remain external.
+2. `/api/v1/health` becomes healthy without MinIO/model warm-up.
+3. `/api/v1/storage/minio/health` verifies bucket access.
+4. The first product request reads page objects, validates/prepares images, then lazily initializes model backends as needed.
+5. After all model modules succeed, the artifact publisher cleans only AI-owned module prefixes and writes JSON/text/crop artifacts.
+6. Only after persistence completes does `/extract/minio` return product success.
+7. Later requests reuse on-disk weights and process-local model instances.
 
 ## Operational notes
 
-Per-image storage objects are bounded by the same `max_upload_bytes` limit before full object read. Pillow still enforces decode/pixel validation after acquisition. The public URL host/port and bucket are restricted by configuration, preventing arbitrary URL fetching.
+Per-image source objects are bounded by `max_upload_bytes` before full object read. Pillow enforces image decode/pixel validation after acquisition. Product writes are deterministic and retry-safe at the object-key level.
 
-The API currently does not provide end-user authentication/rate limiting itself. Keep product and dev-storage endpoints behind the deployment network/API gateway appropriate to your environment.
+The API does not currently provide end-user authentication/rate limiting itself. Keep product and dev-storage endpoints behind the deployment network/API gateway appropriate to your environment.
+
+For very large documents, the current request still retains prepared page/source images until orchestration and publishing finish. Monitor process RAM under realistic page counts; bounded page streaming/release is a future performance optimization rather than part of this contract refactor.

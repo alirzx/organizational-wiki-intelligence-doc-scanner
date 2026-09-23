@@ -19,10 +19,10 @@ storage = get_minio_storage_service()
     response_model=ModulePageResponse,
     summary="Run OCR for one MinIO image",
     description=(
-        "Production OCR endpoint. Send the MinIO object URL supplied by the backend. "
-        "Wiki Hami validates the configured public MinIO host/bucket, retrieves the object "
-        "through its authenticated MinIO client, performs shared image preprocessing, then "
-        "runs PaddleOCR and paragraph grouping. The URL is never fetched as an arbitrary HTTP URL."
+        "Engineering/debug OCR endpoint. Send one MinIO image URL to exercise the same OCR service "
+        "used by the product document workflow. Wiki Hami validates the configured MinIO host/bucket, "
+        "retrieves the object through its authenticated MinIO client, performs shared preprocessing, "
+        "then runs PaddleOCR and paragraph grouping. Product backend integration uses /extract/minio."
     ),
     responses={
         404: {"description": "MinIO object not found"},

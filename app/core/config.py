@@ -17,15 +17,15 @@ class Settings(BaseSettings):
     page_concurrency: int = 4
     module_timeout_seconds: float = 180.0
 
-    # MinIO / S3 acquisition. The client endpoint can be an internal container
-    # address (for example minio:9000) while public_base_url is the host/port
-    # present in URLs supplied by the product backend.
+    # MinIO / S3 acquisition + AI artifact persistence. The client endpoint can be
+    # an internal container address (for example minio:9000) while public_base_url
+    # is the host/port present in backend-provided object URLs.
     minio_enabled: bool = False
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = ""
     minio_secret_key: str = ""
     minio_secure: bool = False
-    minio_bucket: str = "wiki-documents"
+    minio_bucket: str = "media"
     minio_public_base_url: str = "http://localhost:9000"
     minio_browser_enabled: bool = True
     minio_list_limit: int = 500

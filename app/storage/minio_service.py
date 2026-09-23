@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from io import BytesIO
 from threading import Lock
 from urllib.parse import quote, unquote, urlparse
 
@@ -12,7 +13,7 @@ from app.core.config import Settings
 
 
 class MinioStorageError(RuntimeError):
-    """Base error for MinIO acquisition failures."""
+    """Base error for MinIO acquisition and persistence failures."""
 
 
 class MinioConfigurationError(MinioStorageError):
@@ -46,12 +47,13 @@ class MinioObjectData:
 
 
 class MinioStorageService:
-    """Authenticated MinIO/S3 acquisition with strict URL-to-object validation.
+    """Authenticated MinIO/S3 access with strict URL-to-object validation.
 
     Backend-provided URLs are never fetched directly over HTTP. The URL is used only
-    to identify a configured bucket/object. Bytes are read through the authenticated
-    MinIO client using ``minio_endpoint``; this keeps container/internal S3 routing
-    independent from the externally exposed host/port in ``minio_public_base_url``.
+    to identify a configured bucket/object. Bytes are read and artifacts are written
+    through the authenticated MinIO client using ``minio_endpoint``; this keeps
+    container/internal S3 routing independent from the host/port in
+    ``minio_public_base_url``.
     """
 
     def __init__(self, settings: Settings):
@@ -101,6 +103,15 @@ class MinioStorageService:
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         return parsed.hostname.lower(), port
 
+    @staticmethod
+    def _normalize_object_key(object_key: str) -> str:
+        key = object_key.lstrip("/")
+        if not key:
+            raise MinioUrlError("object_key is required")
+        if any(segment in {"", ".", ".."} for segment in key.split("/")):
+            raise MinioUrlError("object_key contains an invalid path segment")
+        return key
+
     def parse_image_url(self, image_url: str) -> MinioObjectRef:
         self._require_enabled()
         supplied = urlparse(image_url)
@@ -130,17 +141,14 @@ class MinioStorageService:
             raise MinioUrlError(
                 f"image_url bucket must be {self.settings.minio_bucket!r}"
             )
-        if any(segment in {".", ".."} for segment in object_key.split("/")):
-            raise MinioUrlError("image_url contains an invalid object path segment")
+        key = self._normalize_object_key(object_key)
         # Rebuild a canonical URL without a query string so presigned tokens or
         # other transient credentials can never leak into response provenance.
-        canonical_url = self.build_public_url(object_key)
-        return MinioObjectRef(bucket=bucket, object_key=object_key, source_url=canonical_url)
+        canonical_url = self.build_public_url(key)
+        return MinioObjectRef(bucket=bucket, object_key=key, source_url=canonical_url)
 
     def build_public_url(self, object_key: str) -> str:
-        key = object_key.lstrip("/")
-        if not key:
-            raise MinioUrlError("object_key is required")
+        key = self._normalize_object_key(object_key)
         return (
             f"{self.public_base_url()}/{quote(self.settings.minio_bucket, safe='')}/"
             f"{quote(key, safe='/')}"
@@ -182,9 +190,7 @@ class MinioStorageService:
 
     def fetch_object(self, object_key: str, *, source_url: str | None = None) -> MinioObjectData:
         self._require_enabled()
-        key = object_key.lstrip("/")
-        if not key:
-            raise MinioUrlError("object_key is required")
+        key = self._normalize_object_key(object_key)
         client = self._get_client()
         try:
             stat = client.stat_object(self.settings.minio_bucket, key)
@@ -227,6 +233,85 @@ class MinioStorageService:
             size=size,
             last_modified=getattr(stat, "last_modified", None),
         )
+
+    def object_exists(self, object_key: str) -> bool:
+        self._require_enabled()
+        key = self._normalize_object_key(object_key)
+        client = self._get_client()
+        try:
+            client.stat_object(self.settings.minio_bucket, key)
+            return True
+        except S3Error as exc:
+            if exc.code in {"NoSuchKey", "NoSuchObject"}:
+                return False
+            raise self._translate_s3_error(exc, object_key=key) from exc
+        except Exception as exc:
+            raise MinioStorageError(f"failed to stat MinIO object {key!r}: {exc}") from exc
+
+    def put_bytes(self, object_key: str, data: bytes, *, content_type: str) -> str:
+        """Write one object and return its canonical configured URL.
+
+        ``put_object`` replaces an existing object with the same key, which gives the
+        artifact pipeline deterministic/idempotent overwrite behavior on Celery retries.
+        """
+        self._require_enabled()
+        key = self._normalize_object_key(object_key)
+        client = self._get_client()
+        try:
+            client.put_object(
+                self.settings.minio_bucket,
+                key,
+                BytesIO(data),
+                length=len(data),
+                content_type=content_type,
+            )
+        except S3Error as exc:
+            raise self._translate_s3_error(exc, object_key=key) from exc
+        except Exception as exc:
+            raise MinioStorageError(f"failed to write MinIO object {key!r}: {exc}") from exc
+        return self.build_public_url(key)
+
+    def put_text(
+        self,
+        object_key: str,
+        text: str,
+        *,
+        content_type: str = "text/plain; charset=utf-8",
+    ) -> str:
+        return self.put_bytes(object_key, text.encode("utf-8"), content_type=content_type)
+
+    def delete_prefix(self, prefix: str) -> int:
+        """Delete every object under a non-empty prefix.
+
+        Callers must pass an AI-owned prefix such as
+        ``documents/<document_id>/OCR/``. This deliberately refuses an empty prefix so a
+        retry-cleanup bug cannot turn into a bucket-wide deletion.
+        """
+        self._require_enabled()
+        normalized = prefix.lstrip("/")
+        if not normalized or normalized in {".", ".."}:
+            raise MinioUrlError("a non-empty object prefix is required for deletion")
+        if any(segment in {".", ".."} for segment in normalized.split("/") if segment):
+            raise MinioUrlError("prefix contains an invalid path segment")
+
+        client = self._get_client()
+        deleted = 0
+        try:
+            for item in client.list_objects(
+                self.settings.minio_bucket,
+                prefix=normalized,
+                recursive=True,
+                include_user_meta=False,
+            ):
+                if getattr(item, "is_dir", False):
+                    continue
+                client.remove_object(self.settings.minio_bucket, item.object_name)
+                deleted += 1
+        except S3Error as exc:
+            raise self._translate_s3_error(exc) from exc
+        except Exception as exc:
+            raise MinioStorageError(f"failed to delete MinIO prefix {normalized!r}: {exc}") from exc
+        return deleted
 
     def list_objects(self, *, prefix: str = "", limit: int | None = None) -> tuple[list[dict], bool]:
         self._require_enabled()

@@ -20,49 +20,113 @@ MinIO image_url -> validate -> SDK read+
                                 PreparedPage
 ```
 
-The same size/pixel/decode rules therefore apply to uploaded and MinIO images. Public coordinates are source pixels after EXIF display orientation and before shared resize.
+The same size/pixel/decode rules apply to uploaded and MinIO images. Public coordinates are source pixels after EXIF display orientation and before shared resize.
 
-## Production single-module workflow
+## Product document workflow
 
 ```text
-backend POST JSON
-  document_id + image_url + page identity
-        |
-        v
-validate URL host/port/bucket
-        |
-        v
-MinIO SDK stat + bounded object read
-        |
-        v
-shared prepare_page()
-        |
-        +--> /ocr             -> OCR service -> paragraph objects
-        +--> /figure-table    -> layout service -> figure/table objects
-        +--> /stamp-signature -> RF-DETR service -> stamp/signature objects
+Django / Celery
+      |
+      v
+POST /api/v1/extract/minio
+  document_id + pages[]
+      |
+      v
+validate each MinIO URL
+      |
+      v
+MinIO SDK read
+      |
+      v
+prepare every page
+      |
+      v
+ExtractionOrchestrator
+  per page:
+    OCR ------------------+
+    Figure/Table ----------+--> preserved module results + merged debug result
+    Stamp/Signature -------+
+      |
+      v
+require full document success
+      |
+      v
+ArtifactPublisher
+      |
+      +--> OCR/page-NNN.json.txt
+      +--> OCR/page-NNN-text.txt
+      +--> Figure-Table/page-NNN.json.txt + crops
+      +--> Stamp-Signature/page-NNN.json.txt + crops
+      +--> OCR.txt
+      |
+      v
+HTTP 200 {document_id, status: success}
+      |
+      v
+Celery continues
 ```
 
-Each endpoint runs only the selected model and returns `ModulePageResponse`.
+No callback or separate notification endpoint is used. Backend owns task orchestration and waits for this request.
+
+## Engineering single-module workflow
+
+```text
+POST /ocr
+POST /figure-table
+POST /stamp-signature
+```
+
+Each accepts one validated MinIO image URL, runs only its selected model service and returns `ModulePageResponse`. These endpoints are retained for isolated debugging/evaluation, not as the main Backend integration.
 
 ## Local uploaded document
 
-`POST /extract` retains the multipart workflow used by Streamlit and local evaluation. One or more uploaded pages are prepared and passed to `ExtractionOrchestrator`, which schedules all three model families for each admitted page.
+`POST /extract` retains multipart Streamlit/local evaluation. One or more uploaded pages are prepared and passed to the same `ExtractionOrchestrator`.
 
-## Local MinIO document
+Default behavior returns the detailed `DocumentExtractionResponse` without product persistence.
 
-`POST /extract/minio` accepts one or more MinIO page references. Every object is acquired through the same storage service used by production module APIs, then the resulting prepared pages enter the exact same `ExtractionOrchestrator` as uploaded pages.
+Optional form field:
 
-This route exists so local development can validate the real storage path without making the product backend call three APIs manually.
+```text
+persist_outputs=true
+```
+
+runs the same `ArtifactPublisher` after successful inference and still returns the detailed response.
+
+## Local MinIO document inspection
+
+`POST /extract/minio/inspect` accepts the same document/page request as production but returns the detailed canonical extraction response for Streamlit/testing.
+
+Optional query parameter:
+
+```text
+persist_outputs=true
+```
+
+publishes the same production artifacts in the same inference pass.
 
 ## Streamlit workflow
 
-The inspector has two input modes:
+The inspector keeps two input modes:
 
-- Local upload: select 1..N image files and call `/extract`.
-- MinIO: check storage connectivity, browse objects by prefix, multi-select pages, preview through the API proxy, then call `/extract/minio`.
+- Local upload → `/extract`
+- MinIO browse/select/preview → `/extract/minio/inspect`
 
-After either route returns, the result workflow is identical: source/annotated image comparison, per-pipeline status, ordered detections, model-specific views, canonical page/document JSON, and JSON/ZIP export.
+A **Persist product artifacts to MinIO** checkbox maps to the optional persistence flag on either inspection route. After either route returns, the detailed result workflow remains available: source/annotated comparison, per-module status, OCR/layout/mark views, canonical JSON, and JSON/ZIP export.
+
+## Retry workflow
+
+Celery may repeat `/extract/minio` for the same document. Before product persistence, only:
+
+```text
+documents/{document_id}/OCR/
+documents/{document_id}/Figure-Table/
+documents/{document_id}/Stamp-Signature/
+```
+
+are cleaned. Artifact names are deterministic, and document-level `OCR.txt` is overwritten. Backend-owned inputs remain untouched.
 
 ## Error/status workflow
 
-Acquisition/preparation failures reject the request before inference. During full extraction, module failures remain isolated and successful objects survive. Independent model APIs do not wrap inference exceptions in a partial-success envelope.
+Input acquisition/preparation failures reject the request before inference. The orchestrator still isolates module failures internally.
+
+Detailed inspection routes may return `partial_success`. Product `/extract/minio` does not publish a partial run: any failed module produces HTTP 500 with `{status: failed}`. MinIO persistence failures produce HTTP 502. HTTP 200 means all modules and required output writes completed successfully.

@@ -4,34 +4,48 @@ Wiki Hami Extraction V1 converts document page images into canonical OCR paragra
 
 ## Current architecture
 
-Production images live in MinIO. The product backend sends an object URL to one of the three independent model APIs; Wiki Hami validates the configured MinIO host/bucket, obtains the object through its own authenticated MinIO client, performs shared preprocessing, then runs the selected CPU model.
+The product backend prepares page images in MinIO and sends one synchronous document request to Wiki Hami. The AI service validates and reads those pages through its authenticated MinIO client, runs all three CPU extraction modules, persists AI-owned artifacts back to MinIO, then returns a small success/failed status to the Backend Celery task.
 
 ```text
-Product backend -> MinIO URL -> authenticated object acquisition -> prepare page
-                                                            |
-                              +-----------------------------+-----------------------------+
-                              |                             |                             |
-                           OCR API                    Figure/Table API             Stamp/Signature API
-                              |                             |                             |
-                           PaddleOCR                   PP-DocLayoutV3                   RF-DETR
+Django / Celery
+      |
+      v
+POST /api/v1/extract/minio
+      |
+      v
+MinIO page acquisition -> shared preprocessing
+      |
+      +--> OCR / PaddleOCR
+      +--> Figure-Table / PP-DocLayoutV3
+      +--> Stamp-Signature / RF-DETR
+      |
+      v
+ArtifactPublisher
+      |
+      v
+MinIO AI outputs
+      |
+      v
+small status response
 ```
 
-Local development supports both uploaded images and MinIO objects. `/extract` is the existing upload-based full workflow; `/extract/minio` runs all three pipelines over MinIO pages. Both reuse the same preprocessing, model services and canonical output contract.
+The three single-module APIs remain available for engineering/debug use. Local development supports both uploaded images and MinIO objects and can optionally persist the same production artifacts while still returning detailed inspection data.
 
-See [architecture](docs/architecture.md), [workflows](docs/workflows.md) and [MinIO integration](docs/minio.md).
+See [architecture](docs/architecture.md), [workflows](docs/workflows.md), [API reference](docs/api.md), and [MinIO integration](docs/minio.md).
 
 ## APIs
 
-Product/backend:
+Primary product/backend:
 
-- `POST /api/v1/ocr` — JSON + one MinIO `image_url`
-- `POST /api/v1/figure-table` — JSON + one MinIO `image_url`
-- `POST /api/v1/stamp-signature` — JSON + one MinIO `image_url`
+- `POST /api/v1/extract/minio` — one document + all MinIO page URLs; persists outputs and returns status
 
-Local/E2E:
+Engineering/debug:
 
-- `POST /api/v1/extract` — multipart uploaded pages
-- `POST /api/v1/extract/minio` — JSON with one or more MinIO page URLs
+- `POST /api/v1/ocr` — one MinIO page, detailed OCR response
+- `POST /api/v1/figure-table` — one MinIO page, detailed layout response
+- `POST /api/v1/stamp-signature` — one MinIO page, detailed mark response
+- `POST /api/v1/extract` — multipart uploaded pages, detailed full response
+- `POST /api/v1/extract/minio/inspect` — MinIO pages, detailed full response
 
 Storage inspection for the local UI:
 
@@ -39,7 +53,36 @@ Storage inspection for the local UI:
 - `GET /api/v1/storage/minio/objects`
 - `GET /api/v1/storage/minio/object`
 
-Swagger/OpenAPI is at `/docs`. Exact contracts and examples are in [docs/api.md](docs/api.md).
+Swagger/OpenAPI is at `/docs`.
+
+## Product MinIO layout
+
+Input prepared by Backend:
+
+```text
+media/documents/{document_id}/images/page-001.jpg
+media/documents/{document_id}/images/page-002.jpg
+```
+
+AI-owned outputs:
+
+```text
+documents/{document_id}/
+├── OCR/
+│   ├── page-001.json.txt
+│   └── page-001-text.txt
+├── Figure-Table/
+│   ├── page-001.json.txt
+│   ├── page-001-table-001.png
+│   └── page-001-figure-001.png
+├── Stamp-Signature/
+│   ├── page-001.json.txt
+│   ├── page-001-stamp-001.png
+│   └── page-001-signature-001.png
+└── OCR.txt
+```
+
+OCR does not produce crop images. Figure/Table and Stamp/Signature crops are generated from EXIF-corrected source images using canonical source-coordinate bounding boxes. Deterministic names plus AI-prefix cleanup make Celery retries idempotent without touching Backend-owned `original.pdf`, `main.txt`, or `images/`.
 
 ## Baseline models
 
@@ -49,18 +92,19 @@ Swagger/OpenAPI is at `/docs`. Exact contracts and examples are in [docs/api.md]
 | Figure/Table | `PaddlePaddle/PP-DocLayoutV3` | CPU | `figure`, `table` |
 | Stamp/Signature | `bluecopa/rf-detr-stamp-signature-detector` | CPU | `stamp`, `signature` |
 
-MinIO integration does not change model/device configuration.
+The product refactor does not change model/device inference configuration.
 
 ## Repository structure
 
 ```text
 run.py               unified local launcher
 app/api/             FastAPI routes and request contracts
-app/storage/         MinIO URL validation and authenticated object acquisition
+app/storage/         MinIO URL validation plus authenticated read/write operations
+app/artifacts/       deterministic JSON/text/crop artifact generation and persistence
 app/core/            environment settings and process-local service registry
 app/preprocessing/   validation, decode, EXIF/RGB/resize and geometry transforms
 app/modules/         OCR, layout and RF-DETR backends/services/adapters
-app/orchestration/   multi-page/all-model execution and aggregation
+app/orchestration/   multi-page/all-model execution, preserved module results and aggregation
 app/schemas/         public Pydantic contracts
 ui/                  Streamlit engineering inspector and exports
 tests/               unit/integration contracts
@@ -101,19 +145,19 @@ WIKI_HAMI_STAMP_SIGNATURE_BACKEND=rfdetr
 WIKI_HAMI_STAMP_SIGNATURE_DEVICE=cpu
 ```
 
-MinIO settings:
+Server/product MinIO when Backend sends `http://minio:9000/media/...`:
 
 ```env
 WIKI_HAMI_MINIO_ENABLED=true
 WIKI_HAMI_MINIO_ENDPOINT=minio:9000
-WIKI_HAMI_MINIO_PUBLIC_BASE_URL=http://<external-minio-host>:<exposed-port>
+WIKI_HAMI_MINIO_PUBLIC_BASE_URL=http://minio:9000
 WIKI_HAMI_MINIO_ACCESS_KEY=<secret>
 WIKI_HAMI_MINIO_SECRET_KEY=<secret>
 WIKI_HAMI_MINIO_SECURE=false
-WIKI_HAMI_MINIO_BUCKET=wiki-documents
+WIKI_HAMI_MINIO_BUCKET=media
 ```
 
-`MINIO_ENDPOINT` is Wiki Hami's connection address. `MINIO_PUBLIC_BASE_URL` is the host/port appearing in URLs sent by the backend. They can differ, for example Docker `minio:9000` internally versus host port `9002` externally. Never commit real credentials. See [docs/minio.md](docs/minio.md).
+Local host-exposed MinIO can instead use `192.168.4.209:9002` for both endpoint and public base URL while keeping bucket `media`. Never commit real credentials. The AI account now needs read/list/write permission and delete permission for retry cleanup of AI-owned prefixes.
 
 ## Run locally
 
@@ -133,21 +177,21 @@ python run.py --web
 - Swagger: `http://localhost:8000/docs`
 - UI: `http://localhost:8501`
 
-The Streamlit inspector provides Local Upload and MinIO input modes, MinIO health/object browsing and preview, full extraction, source/annotated overlays, pipeline status, ordered detections, OCR/layout/mark views, page/document JSON and downloadable JSON/ZIP artifacts.
+The Streamlit inspector provides Local Upload and MinIO input modes, MinIO health/object browsing and preview, detailed canonical results, overlays and downloads. Enable **Persist product artifacts to MinIO** to run the same publisher used by `/extract/minio` without losing the detailed local response.
 
 ## Model caching
 
-First real inference downloads missing model weights. Framework caches are persisted by Compose and later requests reuse in-memory model instances. MinIO objects are read from object storage per request; they are not copied into the model-cache directories.
+First real inference downloads missing model weights. Framework caches are persisted by Compose and later requests reuse in-memory model instances. MinIO objects are read from object storage per request; they are not copied into model-cache directories.
 
 ## Docker / deployment
 
-The existing Dockerfile automatically installs the MinIO SDK through `requirements.txt`; no model image/device changes are required. Both Compose files already load `.env`, so MinIO configuration is injected the same way as the existing model settings.
+No model image/device changes are required. Existing Compose/CI ownership remains unchanged; deployment continues to load `.env` and run the same API/UI containers.
 
 ```bash
 docker compose up -d --build
 ```
 
-Production should keep one Uvicorn worker while models are process-local. Disable `WIKI_HAMI_MINIO_BROWSER_ENABLED` when the Streamlit storage browser/proxy is not required. See [deployment](docs/deployment.md).
+Production should keep one Uvicorn worker while models are process-local. Disable `WIKI_HAMI_MINIO_BROWSER_ENABLED` when the Streamlit storage browser/proxy is not required.
 
 ## Tests
 
@@ -155,7 +199,7 @@ Production should keep one Uvicorn worker while models are process-local. Disabl
 pytest -q
 ```
 
-Tests keep real models/network disabled through mocks and cover product URL contracts, MinIO URL validation, uploaded and MinIO full extraction, canonical provenance, orchestration, transforms, adapters and UI helpers.
+The suite uses mock models/network-free fixtures and covers URL policy, local/minio extraction, orchestration failure isolation, artifact layout, OCR crop exclusion, deterministic visual crops, provenance, transforms, adapters and UI helpers.
 
 ## Documentation
 
