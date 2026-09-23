@@ -4,6 +4,7 @@ from functools import lru_cache
 
 from app.artifacts.publisher import ArtifactPublisher
 from app.core.config import get_settings
+from app.jobs.store import JobStore
 from app.modules.figure_table.service import FigureTableService
 from app.modules.ocr.service import OCRService
 from app.modules.stamp_signature.service import StampSignatureService
@@ -37,8 +38,12 @@ def get_artifact_publisher() -> ArtifactPublisher:
 
 
 @lru_cache
+def get_job_store() -> JobStore:
+    return JobStore(get_settings())
+
+
+@lru_cache
 def get_extraction_orchestrator() -> ExtractionOrchestrator:
-    """Build the orchestrator around the same services used by module endpoints."""
     return ExtractionOrchestrator(
         get_settings(),
         ocr=get_ocr_service(),

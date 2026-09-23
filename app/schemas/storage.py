@@ -12,25 +12,15 @@ MODULE_REQUEST_EXAMPLE = {
     "page_metadata": {"source_asset_id": "asset_991"},
 }
 
+JobState = Literal["queued", "processing", "completed", "failed"]
+
 
 class ModuleImageRequest(BaseModel):
-    """Engineering request for one model pipeline using a MinIO object URL."""
-
     model_config = ConfigDict(json_schema_extra={"examples": [MODULE_REQUEST_EXAMPLE]})
-
     document_id: str = Field(min_length=1, description="Logical document identifier.")
-    image_url: str = Field(
-        min_length=1,
-        description=(
-            "MinIO/S3 object URL supplied by the backend or engineering client. Its host/port "
-            "and bucket must match the configured Wiki Hami MinIO policy."
-        ),
-    )
+    image_url: str = Field(min_length=1)
     page_number: int = Field(default=1, ge=1)
-    page_id: str | None = Field(
-        default=None,
-        description="Defaults to <document_id>:p<page_number> when omitted.",
-    )
+    page_id: str | None = Field(default=None)
     page_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -65,7 +55,6 @@ class MinioDocumentRequest(BaseModel):
             ]
         }
     )
-
     document_id: str = Field(min_length=1)
     pages: list[MinioPageRequest] = Field(min_length=1)
     document_metadata: dict[str, Any] = Field(default_factory=dict)
@@ -76,7 +65,6 @@ class MinioDocumentRequest(BaseModel):
         if not document_id or document_id in {".", ".."} or "/" in document_id or "\\" in document_id:
             raise ValueError("document_id must be a non-empty single path segment")
         self.document_id = document_id
-
         page_numbers: set[int] = set()
         page_ids: set[str] = set()
         for index, page in enumerate(self.pages, start=1):
@@ -92,11 +80,35 @@ class MinioDocumentRequest(BaseModel):
 
 
 class ExtractionJobResponse(BaseModel):
-    """Small Backend ↔ AI contract after artifacts are persisted in MinIO."""
-
+    """Immediate response from the asynchronous production endpoint."""
+    job_id: str
     document_id: str
-    status: Literal["success", "failed"]
-    error: str | None = None
+    status: Literal["queued"]
+
+
+class JobError(BaseModel):
+    code: str
+    message: str
+
+
+class JobOutputPaths(BaseModel):
+    ocr: str | None = None
+    layout: str | None = None
+    ocr_dir: str | None = None
+    figure_table_dir: str | None = None
+    stamp_signature_dir: str | None = None
+
+
+class JobStatusResponse(BaseModel):
+    job_id: str
+    document_id: str
+    status: JobState
+    created_at: str
+    updated_at: str
+    outputs: JobOutputPaths | None = None
+    error: JobError | None = None
+    callback_delivered: bool | None = None
+    callback_error: str | None = None
 
 
 class MinioHealthResponse(BaseModel):

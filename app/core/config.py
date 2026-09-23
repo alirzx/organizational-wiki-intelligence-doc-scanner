@@ -17,9 +17,7 @@ class Settings(BaseSettings):
     page_concurrency: int = 4
     module_timeout_seconds: float = 180.0
 
-    # MinIO / S3 acquisition + AI artifact persistence. The client endpoint can be
-    # an internal container address (for example minio:9000) while public_base_url
-    # is the host/port present in backend-provided object URLs.
+    # MinIO / S3 acquisition + AI artifact persistence.
     minio_enabled: bool = False
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = ""
@@ -30,8 +28,25 @@ class Settings(BaseSettings):
     minio_browser_enabled: bool = True
     minio_list_limit: int = 500
 
-    # OCR: PaddleOCR full OCR pipeline. Shared preprocessing handles page orientation/resize;
-    # Paddle handles text detection + recognition on the prepared page.
+    # Async production jobs. Redis is used as the durable job-state store even
+    # when Celery's broker is switched to RabbitMQ.
+    celery_broker_url: str = "redis://redis:6379/0"
+    celery_result_backend: str = "redis://redis:6379/1"
+    celery_queue: str = "wiki_hami_extraction"
+    job_store_backend: str = "redis"  # redis | memory (memory is test/dev only)
+    job_store_redis_url: str = "redis://redis:6379/2"
+    job_store_ttl_seconds: int = 7 * 24 * 60 * 60
+
+    # Backend -> AI request authentication and AI -> Backend callback delivery.
+    # Empty values keep local engineering workflows usable; production should
+    # configure all three values.
+    backend_api_key: str = ""
+    callback_url: str = ""
+    callback_token: str = ""
+    callback_timeout_seconds: float = 10.0
+    callback_max_attempts: int = 3
+
+    # OCR: PaddleOCR full OCR pipeline.
     ocr_backend: str = "mock"
     ocr_model_id: str = "PaddlePaddle/arabic_PP-OCRv5_mobile_rec"
     ocr_text_detection_model_name: str = "PP-OCRv5_server_det"
@@ -41,7 +56,7 @@ class Settings(BaseSettings):
     ocr_paragraph_max_gap_ratio: float = 1.8
     ocr_paragraph_min_x_overlap: float = 0.15
 
-    # Layout localization. Only table/figure-like classes are retained for Extraction V1.
+    # Layout localization.
     figure_table_backend: str = "mock"
     figure_table_model_id: str = "PaddlePaddle/PP-DocLayoutV3"
     figure_table_device: str = "cpu"
