@@ -56,12 +56,14 @@ def main() -> None:
         _exec(command)
 
     if args.worker:
+        queue = os.getenv("WIKI_HAMI_CELERY_QUEUE", "wiki_hami_extraction")
         _exec([
             "-m", "celery",
             "-A", "app.jobs.celery_app:celery_app",
             "worker",
             "--loglevel", os.getenv("WIKI_HAMI_LOG_LEVEL", "INFO").lower(),
             "--concurrency", "1",
+            "--queues", queue,
         ])
 
     port = args.port or 8501
