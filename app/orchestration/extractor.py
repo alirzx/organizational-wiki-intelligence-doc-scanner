@@ -39,7 +39,6 @@ class ExtractionOrchestrator:
         self.ocr = ocr or OCRService(settings)
         self.figure_table = figure_table or FigureTableService(settings)
         self.stamp_signature = stamp_signature or StampSignatureService(settings)
-        self._page_semaphore = asyncio.Semaphore(settings.page_concurrency)
 
     @staticmethod
     def _page_state(statuses: list[ModuleStatus]) -> ProcessingState:
@@ -58,8 +57,13 @@ class ExtractionOrchestrator:
             error=f"{type(exc).__name__}: {exc}",
         )
 
-    async def _run_page(self, page: PreparedPage, request_id: str) -> PageRunResult:
-        async with self._page_semaphore:
+    async def _run_page(
+        self,
+        page: PreparedPage,
+        request_id: str,
+        page_semaphore: asyncio.Semaphore,
+    ) -> PageRunResult:
+        async with page_semaphore:
             started = perf_counter()
             jobs = [
                 (ModuleName.OCR, self.ocr.run(page, request_id)),
@@ -124,8 +128,14 @@ class ExtractionOrchestrator:
         document_metadata: dict,
     ) -> DocumentRunResult:
         started = perf_counter()
+        # asyncio synchronization primitives are bound to the event loop that
+        # first waits on them. Celery executes each task through asyncio.run(),
+        # so a cached orchestrator may be reused across multiple event loops.
+        # Keep the semaphore scoped to this document/run instead of the
+        # process-local orchestrator instance.
+        page_semaphore = asyncio.Semaphore(self.settings.page_concurrency)
         page_runs = await asyncio.gather(
-            *(self._run_page(page, request_id) for page in pages)
+            *(self._run_page(page, request_id, page_semaphore) for page in pages)
         )
         page_runs = sorted(page_runs, key=lambda item: item.response.page_number)
         page_results = [item.response for item in page_runs]
