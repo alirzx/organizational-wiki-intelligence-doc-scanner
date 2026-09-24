@@ -22,6 +22,32 @@ services:
       timeout: 5s
       retries: 3
       start_period: 60s
+    networks:
+      - wikio
+
+  worker:
+    image: ${WIKI_HAMI_IMAGE:-wiki-hami-extraction:0.2.0}
+    env_file:
+      - ../.env
+    environment:
+      HF_HOME: /var/lib/wiki-hami/cache/huggingface
+      PADDLE_HOME: /var/lib/wiki-hami/cache/paddle
+      PADDLE_PDX_CACHE_HOME: /var/lib/wiki-hami/cache/paddlex
+      PADDLE_PDX_MODEL_SOURCE: HUGGINGFACE
+    command: python run.py --worker
+    volumes:
+      - ${WIKI_HAMI_DATA_ROOT:-/var/lib/wiki-hami}/cache:/var/lib/wiki-hami/cache
+      - ${WIKI_HAMI_DATA_ROOT:-/var/lib/wiki-hami}/outputs:/app/data/outputs
+    shm_size: "2gb"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.jobs.celery_app:celery_app inspect ping -d celery@$$HOSTNAME --timeout=5 2>/dev/null | grep -q pong"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - wikio
 
   ui:
     image: ${WIKI_HAMI_IMAGE:-wiki-hami-extraction:0.2.0}
@@ -38,3 +64,10 @@ services:
     restart: unless-stopped
     healthcheck:
       disable: true
+    networks:
+      - wikio
+
+networks:
+  wikio:
+    external: true
+    name: wikio
