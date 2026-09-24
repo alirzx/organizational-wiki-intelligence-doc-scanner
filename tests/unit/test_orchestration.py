@@ -1,4 +1,5 @@
 from io import BytesIO
+import asyncio
 
 import pytest
 from PIL import Image
@@ -13,17 +14,17 @@ class FailingStampService:
         raise RuntimeError("test backend unavailable")
 
 
-def _page(settings: Settings):
+def _page(settings: Settings, *, page_number: int = 1):
     image = Image.new("RGB", (300, 400), "white")
     buffer = BytesIO()
     image.save(buffer, format="PNG")
     return prepare_page(
         data=buffer.getvalue(),
-        filename="page.png",
+        filename=f"page-{page_number}.png",
         mime_type="image/png",
         document_id="doc_partial",
-        page_id="doc_partial:p1",
-        page_number=1,
+        page_id=f"doc_partial:p{page_number}",
+        page_number=page_number,
         page_metadata={"source": "test"},
         settings=settings,
     )
@@ -53,6 +54,32 @@ async def test_module_failure_keeps_successful_objects_and_reports_partial_succe
         obj.document_id == "doc_partial" and obj.page_id == "doc_partial:p1"
         for obj in response.objects
     )
+
+
+def test_cached_orchestrator_can_be_reused_across_fresh_event_loops():
+    settings = Settings(
+        ocr_backend="mock",
+        figure_table_backend="mock",
+        stamp_signature_backend="mock",
+        page_concurrency=1,
+    )
+    orchestrator = ExtractionOrchestrator(settings)
+    pages = [_page(settings, page_number=1), _page(settings, page_number=2)]
+
+    async def run_once(request_id: str):
+        return await orchestrator.extract_document(
+            document_id="doc_partial",
+            pages=pages,
+            request_id=request_id,
+            document_metadata={},
+        )
+
+    first = asyncio.run(run_once("req_loop_1"))
+    second = asyncio.run(run_once("req_loop_2"))
+
+    assert first.processing.state == "success"
+    assert second.processing.state == "success"
+    assert [page.page_number for page in second.pages] == [1, 2]
 
 
 def test_module_endpoints_and_orchestrator_share_process_local_services():
