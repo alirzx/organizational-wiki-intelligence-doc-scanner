@@ -1,4 +1,4 @@
-.PHONY: install install-dev install-models test api ui up down logs smoke
+.PHONY: install install-dev install-models test api ui worker up down logs smoke
 
 install:
 	python -m pip install -r requirements.txt
@@ -16,6 +16,9 @@ api:
 ui:
 	streamlit run ui/streamlit_app.py --server.port 8501
 
+worker:
+	python run.py --worker
+
 test:
 	pytest -q
 
@@ -26,7 +29,7 @@ down:
 	docker compose down
 
 logs:
-	docker compose logs -f api ui
+	docker compose logs -f api worker ui
 
 smoke:
 	python scripts/smoke_test.py
