@@ -2,107 +2,228 @@
 
 ## Coordinate space
 
-Public detections use `exif_corrected_source_pixels`: the source image after EXIF display orientation is applied and before any model resize. Model backends may work in any internal coordinate space, but adapters must restore geometry before returning canonical objects.
-
-Visual product crops are generated from `PreparedPage.source_image` using these canonical source-coordinate bounding boxes.
-
-## Document identity
-
-One logical document has one `document_id` and one or more page images. Each page has a stable `page_id`, `page_number`, and arbitrary page metadata. Every detected object repeats `document_id`, `page_id`, and `page_number` so flattened document-level results never lose provenance.
-
-For product persistence, `document_id` must also be safe as a single MinIO object-key path segment because outputs are written under:
+All public detections use:
 
 ```text
-documents/{document_id}/
+exif_corrected_source_pixels
 ```
 
-## Product `/extract/minio` request
+This is the source image after EXIF display orientation and before shared inference resize. Model backends may use their own internal geometry, but adapters restore coordinates before creating canonical objects.
 
-The primary Backend → AI request contains the whole document page list:
+`BBox` uses XYXY source pixels:
 
 ```json
-{
-  "document_id": "123",
-  "document_metadata": {"source": "minio"},
-  "pages": [
-    {
-      "image_url": "http://minio:9000/media/documents/123/images/page-001.jpg",
-      "page_id": "123:p1",
-      "page_number": 1
-    }
-  ]
-}
+{"x1":100,"y1":200,"x2":500,"y2":350}
 ```
 
-The AI service reads all input images from the configured MinIO bucket and does not accept arbitrary remote HTTP images.
+`Polygon` is optional and contains at least three source-space points. Current OCR paragraph and PP-DocLayout polygons are rectangular geometry derived from boxes; RF-DETR stamp/signature currently returns no polygon. Consumers should therefore treat `bbox` as sufficient for current preview placement while preserving `polygon` for future richer geometry.
 
-## Product output ownership
+## Document and page identity
 
-Wiki Hami owns only:
+One logical document has one safe `document_id` and one or more pages. Each page has stable `page_id` and `page_number`. Production request validation prevents duplicate page IDs/numbers.
+
+Every canonical detected object repeats:
 
 ```text
-documents/{document_id}/OCR/
-documents/{document_id}/Figure-Table/
-documents/{document_id}/Stamp-Signature/
-documents/{document_id}/OCR.txt
+document_id
+page_id
+page_number
 ```
 
-Backend-owned source objects such as `images/`, `main.txt`, and `original.pdf` are outside the AI deletion/write boundary except for reading the page images supplied by Backend.
+so flattened or unified layouts do not lose source provenance.
 
-Per-page rules:
+## Canonical object types
 
-- OCR: one canonical JSON-as-TXT file and one plain extracted-text file; no image crops.
-- Figure/Table: one canonical JSON-as-TXT file plus zero or more deterministic PNG crops.
-- Stamp/Signature: one canonical JSON-as-TXT file plus zero or more deterministic PNG crops.
+```text
+paragraph
+table
+figure
+stamp
+signature
+```
 
-`OCR.txt` is a document-level aggregate compatibility artifact.
+Each `DetectedObject` contains:
 
-## Product response/failure boundary
+```text
+object_id
+document_id
+page_id
+page_number
+type
+bbox
+polygon?
+confidence
+text?
+raw_text?
+metadata
+provenance
+```
 
-`POST /api/v1/extract/minio` returns success only after all three modules succeed for all pages and all required artifact writes complete:
+## Production request contract
+
+```http
+POST /api/v1/extract/minio
+X-API-Key: <secret>
+```
+
+The request contains the complete document page list. AI validates that each image belongs under:
+
+```text
+documents/{document_id}/images/
+```
+
+The API creates a durable job and immediately returns `202 queued`. It does not perform production inference in the request thread.
+
+## Job contract
+
+States:
+
+```text
+queued -> processing -> completed
+                    \-> failed
+```
+
+Recovery endpoint:
+
+```http
+GET /api/v1/jobs/{job_id}
+```
+
+Job-status success uses internal/recovery field `outputs`.
+
+## Callback contract
+
+Success callback uses:
 
 ```json
 {
-  "document_id": "123",
-  "status": "success"
+  "job_id": "...",
+  "document_id": "...",
+  "status": "completed",
+  "result": {
+    "ocr": "...",
+    "layout": "...",
+    "ocr_dir": "...",
+    "figure_table_dir": "...",
+    "stamp_signature_dir": "..."
+  }
 }
 ```
 
-Failures use non-2xx HTTP status and include `status: failed` plus an error message where the endpoint handles the failure directly. A partial module run is not published as a successful product document.
-
-This is intentionally stricter than detailed engineering extraction.
-
-## `/extract` multipart fields
-
-- `document_id`: required string
-- `images`: repeated file field, 1..N
-- `document_metadata_json`: optional JSON object
-- `pages_metadata_json`: optional JSON array, exactly one descriptor per image
-- `persist_outputs`: optional boolean, default false
-
-Example page descriptor:
+Failure callback uses:
 
 ```json
 {
-  "page_id": "doc_42:p7",
-  "page_number": 7,
-  "filename": "scan_0007.png",
-  "metadata": {"source_asset_id": "asset_991"}
+  "job_id": "...",
+  "document_id": "...",
+  "status": "failed",
+  "error": {
+    "code": "...",
+    "message": "..."
+  }
 }
 ```
 
-`persist_outputs=true` uses the product artifact publisher but retains the detailed local response.
+Do not conflate callback `result` with job-status `outputs`.
 
-## Detailed MinIO inspection
+## Storage ownership contract
 
-`POST /api/v1/extract/minio/inspect` accepts the same JSON body as product `/extract/minio`, returns the detailed `DocumentExtractionResponse`, and optionally accepts query parameter `persist_outputs=true` for one-pass product-like testing.
+Backend owns:
 
-## Shared vs model-specific normalization
+```text
+documents/{id}/original.pdf
+documents/{id}/main.txt
+documents/{id}/images/*
+```
 
-Shared preprocessing owns validation, decode, display orientation, color space, resizing, and geometry transforms. Mean/std normalization, tensor layout, tokenization, and model-specific resize/padding belong inside each backend adapter.
+AI owns:
 
-## Detailed status/failure boundary
+```text
+documents/{id}/OCR/*
+documents/{id}/Figure-Table/*
+documents/{id}/Stamp-Signature/*
+documents/{id}/OCR.txt
+documents/{id}/layout.json
+```
 
-Detailed `/extract` and `/extract/minio/inspect` preserve successful module results when another module fails or times out and can report `success`, `partial_success`, or `failed` in page/document `processing`. Upload, JSON, descriptor and image validation happen before inference and are all-or-nothing.
+AI may delete only the three module prefixes during deterministic republish. Root AI artifacts are overwritten by key. Backend-owned inputs are never modified/deleted.
 
-When detailed routes are asked to `persist_outputs=true`, full success is required before publishing so local product simulation follows the same persistence guarantee as production.
+## Per-page artifact contract
+
+OCR:
+
+```text
+OCR/page-NNN.json.txt
+OCR/page-NNN-text.txt
+```
+
+No OCR crop images.
+
+Figure/Table:
+
+```text
+Figure-Table/page-NNN.json.txt
+Figure-Table/page-NNN-table-NNN.png
+Figure-Table/page-NNN-figure-NNN.png
+```
+
+Stamp/Signature:
+
+```text
+Stamp-Signature/page-NNN.json.txt
+Stamp-Signature/page-NNN-stamp-NNN.png
+Stamp-Signature/page-NNN-signature-NNN.png
+```
+
+Visual crops are conditional on detections. Raw page JSON exists even for an empty successful detection set.
+
+## Document-level artifact contract
+
+```text
+OCR.txt
+layout.json
+```
+
+`OCR.txt` aggregates page OCR text.
+
+`layout.json` is `wiki-hami.layout.v2` and contains all five canonical types per page, source page dimensions, geometry, confidence, metadata/provenance, artifact references, counts, and deterministic geometric reading order.
+
+## Reading-order contract
+
+Reading order is assigned independently per page after merging all five object types.
+
+Current geometric sort:
+
+```text
+bbox.y1 -> bbox.x1 -> bbox.y2 -> bbox.x2 -> type -> object_id
+```
+
+then numbered `1..N`.
+
+This is deterministic placement/sequence metadata, not semantic Persian/RTL or multi-column interpretation. Preview reconstruction must preserve `bbox`/`polygon` positions and may use reading order as an auxiliary sequence.
+
+## Detailed engineering contracts
+
+`POST /extract` and `POST /extract/minio/inspect` remain synchronous detailed inspection surfaces returning `DocumentExtractionResponse`.
+
+They may expose `success`, `partial_success`, or `failed` processing detail. If asked to `persist_outputs=true`, full success is required before publishing product artifacts.
+
+## Shared versus model-specific normalization
+
+Shared preprocessing owns:
+
+- byte/image validation;
+- decode;
+- EXIF display orientation;
+- RGB conversion;
+- bounded common resize;
+- coordinate transforms.
+
+Model-specific backends own:
+
+- tensor layout;
+- model normalization;
+- model-specific padding/resizing;
+- tokenization or architecture-specific preparation.
+
+The public adapter boundary always returns canonical source-space objects.

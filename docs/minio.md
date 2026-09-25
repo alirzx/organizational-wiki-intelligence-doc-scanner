@@ -1,82 +1,32 @@
-# MinIO integration
+# MinIO Integration and Artifact Contract
 
-## Product contract
+## Bucket and ownership
 
-The primary Backend → AI integration is:
-
-```text
-POST /api/v1/extract/minio
-```
-
-The backend/Celery task prepares page images in MinIO and sends one document request containing all page URLs. Wiki Hami reads those images through its authenticated MinIO client, runs OCR + Figure/Table + Stamp/Signature extraction, writes AI-owned artifacts back to MinIO, and returns a small synchronous status response.
+Default bucket:
 
 ```text
-Django / Celery
-      |
-      v
-POST /api/v1/extract/minio
-      |
-      v
-validated MinIO page acquisition
-      |
-      v
-shared preprocessing
-      |
-      +--> OCR
-      +--> Figure/Table
-      +--> Stamp/Signature
-      |
-      v
-artifact publisher
-      |
-      v
-MinIO outputs
-      |
-      v
-{"document_id":"123","status":"success"}
+media
 ```
 
-No callback is required at this stage because the Backend Celery task waits for the same request.
-
-## Backend request
-
-```json
-{
-  "document_id": "123",
-  "document_metadata": {"source": "minio"},
-  "pages": [
-    {
-      "image_url": "http://minio:9000/media/documents/123/images/page-001.jpg",
-      "page_id": "123:p1",
-      "page_number": 1
-    },
-    {
-      "image_url": "http://minio:9000/media/documents/123/images/page-002.jpg",
-      "page_id": "123:p2",
-      "page_number": 2
-    }
-  ]
-}
-```
-
-Production bucket/path contract:
+Backend-owned inputs:
 
 ```text
-bucket: media
-input:  documents/{document_id}/images/
+media/documents/{document_id}/
+├── original.pdf
+├── main.txt
+└── images/
+    ├── page-001.jpg
+    └── ...
 ```
 
-## AI-owned output structure
-
-Wiki Hami owns only the following artifact locations:
+AI-owned outputs:
 
 ```text
-documents/{document_id}/
+media/documents/{document_id}/
 ├── OCR/
 │   ├── page-001.json.txt
 │   ├── page-001-text.txt
-│   ├── page-002.json.txt
-│   └── page-002-text.txt
+│   └── ...
 ├── Figure-Table/
 │   ├── page-001.json.txt
 │   ├── page-001-table-001.png
@@ -87,133 +37,316 @@ documents/{document_id}/
 │   ├── page-001-stamp-001.png
 │   ├── page-001-signature-001.png
 │   └── ...
-└── OCR.txt
+├── OCR.txt
+└── layout.json
 ```
 
-Rules:
+MinIO prefixes are object-key prefixes, not real folders.
 
-- OCR never stores cropped images.
-- Every OCR page stores the canonical module JSON as UTF-8 JSON in `page-NNN.json.txt`.
-- Every OCR page also stores plain extracted text in `page-NNN-text.txt`.
-- `documents/{document_id}/OCR.txt` is a document-level compatibility aggregate of page OCR text, matching the Backend integration report.
-- Figure/Table and Stamp/Signature store one canonical JSON-as-TXT file per page.
-- Figure/Table and Stamp/Signature additionally store one deterministic PNG crop per detected object.
-- Crops are generated from the EXIF-corrected source image using canonical source-coordinate bounding boxes.
-- Reprocessing cleans only the three AI-owned module prefixes and rewrites deterministic names. Backend-owned `original.pdf`, `main.txt`, and `images/` are never modified.
+## Backend request input policy
 
-MinIO has object-key prefixes rather than real directories; explicit folder creation is not required.
+Production Backend sends page URLs such as:
 
-## Product response
+```text
+http://minio:9000/media/documents/52/images/page-001.jpg
+```
 
-Success:
+The AI service does not perform arbitrary HTTP downloads. It validates the URL against configured MinIO authority/bucket/path and reads the object through the authenticated MinIO SDK.
+
+Expected page prefix:
+
+```text
+documents/{document_id}/images/
+```
+
+## Per-page module artifacts
+
+### OCR
+
+For every successfully processed page:
+
+```text
+OCR/page-NNN.json.txt
+OCR/page-NNN-text.txt
+```
+
+`page-NNN.json.txt` contains a serialized `ModulePageResponse` with:
+
+- schema/request/document/page identity;
+- image metadata;
+- transform metadata;
+- `objects[]`;
+- module status.
+
+OCR `objects[]` are canonical `paragraph` objects and may contain:
+
+- `object_id`;
+- document/page provenance;
+- `bbox`;
+- optional `polygon`;
+- confidence;
+- normalized `text`;
+- `raw_text`;
+- OCR metadata;
+- model provenance.
+
+OCR does not persist paragraph crop images.
+
+### Figure-Table
+
+For every successfully processed page:
+
+```text
+Figure-Table/page-NNN.json.txt
+```
+
+Detected visual objects additionally produce deterministic crops:
+
+```text
+page-NNN-table-001.png
+page-NNN-table-002.png
+page-NNN-figure-001.png
+...
+```
+
+The raw page JSON exists even when no table/figure is detected.
+
+### Stamp-Signature
+
+For every successfully processed page:
+
+```text
+Stamp-Signature/page-NNN.json.txt
+```
+
+Detected visual objects additionally produce:
+
+```text
+page-NNN-stamp-001.png
+page-NNN-signature-001.png
+...
+```
+
+The raw page JSON exists even when no stamp/signature is detected.
+
+## Document OCR aggregate
+
+```text
+documents/{document_id}/OCR.txt
+```
+
+Document-level plain OCR text formed from page OCR text in page processing order. It is an AI-owned compatibility/convenience artifact and is overwritten on successful republish.
+
+## Unified `layout.json` v2
+
+Path:
+
+```text
+documents/{document_id}/layout.json
+```
+
+One file per document.
+
+Schema version:
+
+```text
+wiki-hami.layout.v2
+```
+
+Purpose: provide one page-aware reconstruction index for all five canonical object types.
+
+### Top-level structure
 
 ```json
 {
-  "document_id": "123",
-  "status": "success"
+  "schema_version": "wiki-hami.layout.v2",
+  "document_id": "52",
+  "document_metadata": {"source": "minio"},
+  "page_count": 3,
+  "object_count": 27,
+  "object_counts": {
+    "paragraph": 18,
+    "table": 2,
+    "figure": 3,
+    "stamp": 2,
+    "signature": 2
+  },
+  "pages": []
 }
 ```
 
-Model-processing failure uses a non-2xx HTTP status and returns:
+### Page structure
 
 ```json
 {
-  "document_id": "123",
-  "status": "failed",
-  "error": "..."
+  "page_id": "52:p1",
+  "page_number": 1,
+  "width": 2480,
+  "height": 3508,
+  "coordinate_space": "exif_corrected_source_pixels",
+  "image": {
+    "filename": "page-001.jpg",
+    "mime_type": "image/jpeg",
+    "source_width": 2480,
+    "source_height": 3508,
+    "processed_width": 1770,
+    "processed_height": 2500,
+    "source_coordinate_space": "exif_corrected_source_pixels",
+    "source": {}
+  },
+  "transform": {
+    "exif_orientation_applied": false,
+    "scale_x": 0.7137,
+    "scale_y": 0.7127,
+    "model_input_color_space": "RGB",
+    "notes": []
+  },
+  "reading_order_method": "bbox_top_to_bottom_then_left_to_right",
+  "object_count": 9,
+  "object_counts": {
+    "paragraph": 5,
+    "table": 1,
+    "figure": 1,
+    "stamp": 1,
+    "signature": 1
+  },
+  "objects": []
 }
 ```
 
-HTTP semantics:
+### Unified object structure
 
-- `200`: all required model processing and artifact persistence succeeded;
-- `404`: input MinIO object does not exist;
-- `422`: invalid request, URL, image, or document identifier;
-- `500`: one or more model pipelines failed;
-- `502`: MinIO read/write/connectivity failure;
-- `503`: MinIO disabled or misconfigured.
+Each layout object starts from the full canonical `DetectedObject` and adds module/order/artifact information.
 
-## Internal vs public MinIO addresses
-
-Two addresses remain intentionally separate:
-
-- `WIKI_HAMI_MINIO_ENDPOINT`: address used by Wiki Hami's MinIO SDK.
-- `WIKI_HAMI_MINIO_PUBLIC_BASE_URL`: host/port expected in image URLs supplied to the API and used when canonical object URLs are built.
-
-For the current server contract, Backend sends `http://minio:9000/media/...`, so the expected server configuration is:
-
-```env
-WIKI_HAMI_MINIO_ENABLED=true
-WIKI_HAMI_MINIO_ENDPOINT=minio:9000
-WIKI_HAMI_MINIO_PUBLIC_BASE_URL=http://minio:9000
-WIKI_HAMI_MINIO_BUCKET=media
-WIKI_HAMI_MINIO_ACCESS_KEY=<secret>
-WIKI_HAMI_MINIO_SECRET_KEY=<secret>
-WIKI_HAMI_MINIO_SECURE=false
+```json
+{
+  "object_id": "table-...",
+  "document_id": "52",
+  "page_id": "52:p1",
+  "page_number": 1,
+  "type": "table",
+  "bbox": {
+    "x1": 150.0,
+    "y1": 500.0,
+    "x2": 2200.0,
+    "y2": 1300.0
+  },
+  "polygon": {
+    "points": [
+      {"x": 150.0, "y": 500.0},
+      {"x": 2200.0, "y": 500.0},
+      {"x": 2200.0, "y": 1300.0},
+      {"x": 150.0, "y": 1300.0}
+    ]
+  },
+  "confidence": 0.94,
+  "text": null,
+  "raw_text": null,
+  "metadata": {
+    "source_label": "table",
+    "source_class_id": 3
+  },
+  "provenance": {
+    "module": "figure_table",
+    "backend": "pp_doclayout",
+    "model_id": "PaddlePaddle/PP-DocLayoutV3",
+    "model_version": null
+  },
+  "module": "figure_table",
+  "reading_order": 2,
+  "artifacts": {
+    "module_result": "documents/52/Figure-Table/page-001.json.txt",
+    "plain_text": null,
+    "crop": "documents/52/Figure-Table/page-001-table-001.png"
+  }
+}
 ```
 
-For local development against the exposed MinIO S3 port:
-
-```env
-WIKI_HAMI_MINIO_ENABLED=true
-WIKI_HAMI_MINIO_ENDPOINT=192.168.4.209:9002
-WIKI_HAMI_MINIO_PUBLIC_BASE_URL=http://192.168.4.209:9002
-WIKI_HAMI_MINIO_BUCKET=media
-WIKI_HAMI_MINIO_ACCESS_KEY=<secret>
-WIKI_HAMI_MINIO_SECRET_KEY=<secret>
-WIKI_HAMI_MINIO_SECURE=false
-```
-
-The MinIO Console port is not used by the AI service.
-
-The AI MinIO credential now requires write permission as well as read/list access. At minimum it needs the equivalent of `ListBucket`, `GetObject`, and `PutObject`; `DeleteObject` is needed for retry cleanup of AI-owned prefixes.
-
-## Security
-
-Backend-provided image URLs are never fetched with an arbitrary HTTP client. Wiki Hami parses the URL and requires:
-
-- `http` or `https`;
-- host/port matching `WIKI_HAMI_MINIO_PUBLIC_BASE_URL`;
-- bucket matching `WIKI_HAMI_MINIO_BUCKET`;
-- a non-empty object key;
-- no embedded credentials, fragments, `.` or `..` path segments.
-
-After validation, bucket/object identity is read through the authenticated MinIO SDK. Query strings may be accepted for object identity, but transient query credentials are never persisted in provenance.
-
-## Engineering/local endpoints
-
-The module endpoints remain available for isolated model debugging/evaluation:
+### Object-type behavior
 
 ```text
-POST /api/v1/ocr
-POST /api/v1/figure-table
-POST /api/v1/stamp-signature
+paragraph       bbox=yes   polygon=optional/currently rectangular   text=yes   crop=no
+figure          bbox=yes   polygon=optional/currently rectangular   text=no    crop=yes
+table           bbox=yes   polygon=optional/currently rectangular   text=no    crop=yes
+stamp           bbox=yes   polygon=null with current backend         text=no    crop=yes
+signature       bbox=yes   polygon=null with current backend         text=no    crop=yes
 ```
 
-They return `ModulePageResponse` and do not publish product artifacts.
+The schema keeps `polygon` optional so richer future geometry can be added without changing the object shape.
 
-Detailed full-document inspection paths are:
+## Reading order
+
+`reading_order` is **per page** and is assigned after all five object types are merged.
+
+Current deterministic sort key:
 
 ```text
-POST /api/v1/extract
-POST /api/v1/extract/minio/inspect
+bbox.y1
+bbox.x1
+bbox.y2
+bbox.x2
+type
+object_id
 ```
 
-Both return the existing `DocumentExtractionResponse`. They share the same preprocessing/model orchestration as production. For product-like local testing, they support optional artifact persistence without changing their detailed response:
+Then order is assigned from `1..N`.
 
-- multipart `/extract`: form field `persist_outputs=true`;
-- `/extract/minio/inspect`: query parameter `persist_outputs=true`.
+This is geometric ordering, not a semantic RTL/multi-column reading-order model. For preview/document reconstruction, geometry is authoritative. A stamp/signature may overlap text and must remain at its source coordinates even if its numeric order differs from a human reading sequence.
 
-The Streamlit inspector exposes this as **Persist product artifacts to MinIO**.
+## BBox and polygon
 
-## Storage inspection endpoints
+`bbox` is an axis-aligned XYXY box in source-page pixels:
 
-Internal Streamlit/dev storage helpers remain:
+```json
+{"x1":100,"y1":200,"x2":500,"y2":350}
+```
+
+`polygon` is a list of at least three source-space points.
+
+Current OCR paragraph and PP-DocLayout polygons are rectangular polygons derived from their boxes, so they do not yet provide more shape precision than `bbox`. RF-DETR stamp/signature currently provides only `bbox`.
+
+For current preview reconstruction, `bbox + page width/height` is sufficient. Preserve `polygon` because future backends may provide real rotated/irregular geometry.
+
+## Artifact references
+
+Every unified object contains:
+
+```json
+"artifacts": {
+  "module_result": "...",
+  "plain_text": "... or null",
+  "crop": "... or null"
+}
+```
+
+This lets downstream consumers resolve from layout object to raw module response and visual crop without guessing filenames.
+
+## Retry and ownership safety
+
+Before republishing, AI removes only:
 
 ```text
-GET /api/v1/storage/minio/health
-GET /api/v1/storage/minio/objects?prefix=...
-GET /api/v1/storage/minio/object?object_key=...
+documents/{id}/OCR/
+documents/{id}/Figure-Table/
+documents/{id}/Stamp-Signature/
 ```
 
-Object listing/preview are controlled by `WIKI_HAMI_MINIO_BROWSER_ENABLED` and can be disabled in deployments that do not expose the inspection UI.
+Then it rewrites module artifacts and overwrites root `OCR.txt` and `layout.json`.
+
+AI never deletes or rewrites:
+
+```text
+original.pdf
+main.txt
+images/*
+```
+
+## Callback object keys
+
+Callback/job output values are object keys inside bucket `media`:
+
+```text
+documents/52/layout.json
+```
+
+Do not prepend `media/` when passing the key to an SDK call that already receives bucket `media` separately.

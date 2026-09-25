@@ -1,118 +1,198 @@
 # Wiki Hami — Extraction V1
 
-Wiki Hami Extraction V1 converts document page images into canonical OCR paragraph, figure, table, stamp and signature detections. This repository is Step 1 only; template generation, document linking and later semantic/wiki stages are outside its scope.
+Production-oriented document extraction service for the Wiki Hami organizational-wiki pipeline. This repository implements **Step 1 only**: page acquisition, OCR paragraph extraction, figure/table detection, stamp/signature detection, deterministic artifact persistence, and a unified document layout for downstream reconstruction.
 
-## Current architecture
+Template generation, document linking, semantic/RAG stages, table-cell extraction, signature identity, and final wiki generation are intentionally outside this repository.
 
-The product backend prepares page images in MinIO and sends one synchronous document request to Wiki Hami. The AI service validates and reads those pages through its authenticated MinIO client, runs all three CPU extraction modules, persists AI-owned artifacts back to MinIO, then returns a small success/failed status to the Backend Celery task.
+## Production status
+
+The production path is asynchronous:
 
 ```text
-Django / Celery
+Backend / Django
+      |
+      | POST /api/v1/extract/minio + X-API-Key
+      v
+Wiki Hami FastAPI
+      |
+      | create job + enqueue
+      v
+Redis / Celery queue
       |
       v
-POST /api/v1/extract/minio
+Wiki Hami worker (concurrency=1)
       |
-      v
-MinIO page acquisition -> shared preprocessing
-      |
-      +--> OCR / PaddleOCR
-      +--> Figure-Table / PP-DocLayoutV3
-      +--> Stamp-Signature / RF-DETR
+      +--> PaddleOCR                -> paragraph
+      +--> PP-DocLayoutV3           -> figure, table
+      +--> RF-DETR                  -> stamp, signature
       |
       v
 ArtifactPublisher
       |
+      +--> per-module page artifacts
+      +--> OCR.txt
+      +--> layout.json (unified layout v2)
       v
-MinIO AI outputs
+MinIO
       |
+      | terminal callback + Bearer token
       v
-small status response
+Backend -> document READY / FAILED
 ```
 
-The three single-module APIs remain available for engineering/debug use. Local development supports both uploaded images and MinIO objects and can optionally persist the same production artifacts while still returning detailed inspection data.
+The public production request schema is stable. `POST /api/v1/extract/minio` returns `202 Accepted` with a durable `job_id`; processing continues in the Celery worker. The Backend receives terminal state through the callback and may reconcile with `GET /api/v1/jobs/{job_id}`.
 
-See [architecture](docs/architecture.md), [workflows](docs/workflows.md), [API reference](docs/api.md), and [MinIO integration](docs/minio.md).
+## Extraction outputs
 
-## APIs
+Canonical object types:
 
-Primary product/backend:
+- `paragraph` — PaddleOCR text detection/recognition + Wiki Hami paragraph grouping
+- `table` — PP-DocLayoutV3
+- `figure` — PP-DocLayoutV3
+- `stamp` — RF-DETR
+- `signature` — RF-DETR
 
-- `POST /api/v1/extract/minio` — one document + all MinIO page URLs; persists outputs and returns status
+All public geometry is restored to `exif_corrected_source_pixels`, meaning coordinates refer to the source page after EXIF display orientation and before shared model resize.
 
-Engineering/debug:
+## MinIO contract
 
-- `POST /api/v1/ocr` — one MinIO page, detailed OCR response
-- `POST /api/v1/figure-table` — one MinIO page, detailed layout response
-- `POST /api/v1/stamp-signature` — one MinIO page, detailed mark response
-- `POST /api/v1/extract` — multipart uploaded pages, detailed full response
-- `POST /api/v1/extract/minio/inspect` — MinIO pages, detailed full response
+Default bucket: `media`.
 
-Storage inspection for the local UI:
+```text
+media/
+└── documents/
+    └── {document_id}/
+        ├── original.pdf                    # Backend-owned
+        ├── main.txt                        # Backend-owned
+        ├── images/                         # Backend-owned AI inputs
+        │   ├── page-001.jpg
+        │   └── ...
+        ├── OCR/                            # AI-owned
+        │   ├── page-001.json.txt
+        │   ├── page-001-text.txt
+        │   └── ...
+        ├── Figure-Table/                   # AI-owned
+        │   ├── page-001.json.txt
+        │   ├── page-001-table-001.png
+        │   ├── page-001-figure-001.png
+        │   └── ...
+        ├── Stamp-Signature/                # AI-owned
+        │   ├── page-001.json.txt
+        │   ├── page-001-stamp-001.png
+        │   ├── page-001-signature-001.png
+        │   └── ...
+        ├── OCR.txt                         # AI-owned document OCR aggregate
+        └── layout.json                     # AI-owned unified document layout v2
+```
 
+`layout.json` is one file per document and contains every detected paragraph/table/figure/stamp/signature grouped by page, including source-page dimensions, `bbox`, optional `polygon`, confidence, metadata, provenance, artifact references, and a deterministic per-page geometric `reading_order`.
+
+Detailed storage and layout contracts: [docs/minio.md](docs/minio.md).
+
+## Production API
+
+### Submit document
+
+```http
+POST /api/v1/extract/minio
+X-API-Key: <shared-secret>
+Content-Type: application/json
+```
+
+```json
+{
+  "document_id": "52",
+  "document_metadata": {"source": "minio"},
+  "pages": [
+    {
+      "image_url": "http://minio:9000/media/documents/52/images/page-001.jpg",
+      "page_id": "52:p1",
+      "page_number": 1
+    }
+  ]
+}
+```
+
+Immediate response:
+
+```http
+202 Accepted
+```
+
+```json
+{
+  "job_id": "<job-id>",
+  "document_id": "52",
+  "status": "queued"
+}
+```
+
+### Recover job state
+
+```http
+GET /api/v1/jobs/{job_id}
+X-API-Key: <shared-secret>
+```
+
+Terminal success includes `status: completed`, MinIO output paths, and callback delivery state.
+
+### Backend callback
+
+On success the worker sends:
+
+```json
+{
+  "job_id": "<job-id>",
+  "document_id": "52",
+  "status": "completed",
+  "result": {
+    "ocr": "documents/52/OCR.txt",
+    "layout": "documents/52/layout.json",
+    "ocr_dir": "documents/52/OCR/",
+    "figure_table_dir": "documents/52/Figure-Table/",
+    "stamp_signature_dir": "documents/52/Stamp-Signature/"
+  }
+}
+```
+
+See [Backend async contract](docs/backend-async-contract.md) for the authoritative integration contract.
+
+## Engineering APIs
+
+These surfaces are for debugging, evaluation, and the Streamlit engineering console:
+
+- `POST /api/v1/ocr`
+- `POST /api/v1/figure-table`
+- `POST /api/v1/stamp-signature`
+- `POST /api/v1/extract` — multipart uploaded pages
+- `POST /api/v1/extract/minio/inspect` — synchronous detailed MinIO inspection
 - `GET /api/v1/storage/minio/health`
 - `GET /api/v1/storage/minio/objects`
 - `GET /api/v1/storage/minio/object`
 
-Swagger/OpenAPI is at `/docs`.
+Swagger/OpenAPI: `/docs`.
 
-## Product MinIO layout
-
-Input prepared by Backend:
+## Repository map
 
 ```text
-media/documents/{document_id}/images/page-001.jpg
-media/documents/{document_id}/images/page-002.jpg
+app/api/             FastAPI routes, auth dependencies, request parsing
+app/jobs/            Celery app, task, durable job store, callback delivery
+app/storage/         MinIO URL policy and authenticated object operations
+app/artifacts/       deterministic MinIO artifact publisher + layout v2
+app/preprocessing/   decode, EXIF/RGB, resize, geometry transforms
+app/modules/         OCR, figure/table, stamp/signature backends and adapters
+app/orchestration/   per-page/all-module execution and aggregation
+app/schemas/         canonical Pydantic contracts
+app/core/            settings and process-local runtime registry
+ui/                  Streamlit engineering inspector
+tests/               unit/integration regression suite
+deployment/          production Compose/operator notes
+docs/                architecture and integration documentation
 ```
 
-AI-owned outputs:
+## Local setup
 
-```text
-documents/{document_id}/
-├── OCR/
-│   ├── page-001.json.txt
-│   └── page-001-text.txt
-├── Figure-Table/
-│   ├── page-001.json.txt
-│   ├── page-001-table-001.png
-│   └── page-001-figure-001.png
-├── Stamp-Signature/
-│   ├── page-001.json.txt
-│   ├── page-001-stamp-001.png
-│   └── page-001-signature-001.png
-└── OCR.txt
-```
-
-OCR does not produce crop images. Figure/Table and Stamp/Signature crops are generated from EXIF-corrected source images using canonical source-coordinate bounding boxes. Deterministic names plus AI-prefix cleanup make Celery retries idempotent without touching Backend-owned `original.pdf`, `main.txt`, or `images/`.
-
-## Baseline models
-
-| Module | Model | Device | Canonical output |
-|---|---|---|---|
-| OCR | `PP-OCRv5_server_det` + `arabic_PP-OCRv5_mobile_rec` | CPU | `paragraph` |
-| Figure/Table | `PaddlePaddle/PP-DocLayoutV3` | CPU | `figure`, `table` |
-| Stamp/Signature | `bluecopa/rf-detr-stamp-signature-detector` | CPU | `stamp`, `signature` |
-
-The product refactor does not change model/device inference configuration.
-
-## Repository structure
-
-```text
-run.py               unified local launcher
-app/api/             FastAPI routes and request contracts
-app/storage/         MinIO URL validation plus authenticated read/write operations
-app/artifacts/       deterministic JSON/text/crop artifact generation and persistence
-app/core/            environment settings and process-local service registry
-app/preprocessing/   validation, decode, EXIF/RGB/resize and geometry transforms
-app/modules/         OCR, layout and RF-DETR backends/services/adapters
-app/orchestration/   multi-page/all-model execution, preserved module results and aggregation
-app/schemas/         public Pydantic contracts
-ui/                  Streamlit engineering inspector and exports
-tests/               unit/integration contracts
-deployment/          production-style Compose baseline
-docs/                architecture, API, storage and deployment documentation
-```
-
-## Python 3.11 setup
+Python 3.11:
 
 ```bash
 python3.11 -m venv .venv
@@ -122,7 +202,7 @@ python -m pip install -r requirements-dev.txt
 cp .env.example .env
 ```
 
-For real CPU models install in this order:
+For real CPU models:
 
 ```bash
 python -m pip install -r requirements-paddle-cpu.txt \
@@ -132,81 +212,84 @@ python -m pip install -r requirements-torch-cpu.txt \
 python -m pip install -r requirements-models.txt
 ```
 
-## Environment
-
-Real model selection:
-
-```env
-WIKI_HAMI_OCR_BACKEND=paddle
-WIKI_HAMI_OCR_DEVICE=cpu
-WIKI_HAMI_FIGURE_TABLE_BACKEND=pp_doclayout
-WIKI_HAMI_FIGURE_TABLE_DEVICE=cpu
-WIKI_HAMI_STAMP_SIGNATURE_BACKEND=rfdetr
-WIKI_HAMI_STAMP_SIGNATURE_DEVICE=cpu
-```
-
-Server/product MinIO when Backend sends `http://minio:9000/media/...`:
-
-```env
-WIKI_HAMI_MINIO_ENABLED=true
-WIKI_HAMI_MINIO_ENDPOINT=minio:9000
-WIKI_HAMI_MINIO_PUBLIC_BASE_URL=http://minio:9000
-WIKI_HAMI_MINIO_ACCESS_KEY=<secret>
-WIKI_HAMI_MINIO_SECRET_KEY=<secret>
-WIKI_HAMI_MINIO_SECURE=false
-WIKI_HAMI_MINIO_BUCKET=media
-```
-
-Local host-exposed MinIO can instead use `192.168.4.209:9002` for both endpoint and public base URL while keeping bucket `media`. Never commit real credentials. The AI account now needs read/list/write permission and delete permission for retry cleanup of AI-owned prefixes.
-
-## Run locally
+Local processes:
 
 ```bash
-source .venv/bin/activate
 python run.py --api
-```
-
-Second terminal:
-
-```bash
-source .venv/bin/activate
+python run.py --worker
 python run.py --web
 ```
 
-- API: `http://localhost:8000`
-- Swagger: `http://localhost:8000/docs`
-- UI: `http://localhost:8501`
+The production endpoint needs Redis/job-store configuration and a running worker. For synchronous engineering inspection only, the API/UI can still be used without the product queue path.
 
-The Streamlit inspector provides Local Upload and MinIO input modes, MinIO health/object browsing and preview, detailed canonical results, overlays and downloads. Enable **Persist product artifacts to MinIO** to run the same publisher used by `/extract/minio` without losing the detailed local response.
+## Required production configuration
 
-## Model caching
+At minimum configure real model backends, MinIO, Redis, Backend API authentication, and callback authentication:
 
-First real inference downloads missing model weights. Framework caches are persisted by Compose and later requests reuse in-memory model instances. MinIO objects are read from object storage per request; they are not copied into model-cache directories.
+```env
+WIKI_HAMI_OCR_BACKEND=paddle
+WIKI_HAMI_FIGURE_TABLE_BACKEND=pp_doclayout
+WIKI_HAMI_STAMP_SIGNATURE_BACKEND=rfdetr
+
+WIKI_HAMI_MINIO_ENABLED=true
+WIKI_HAMI_MINIO_ENDPOINT=minio:9000
+WIKI_HAMI_MINIO_PUBLIC_BASE_URL=http://minio:9000
+WIKI_HAMI_MINIO_BUCKET=media
+WIKI_HAMI_MINIO_ACCESS_KEY=<secret>
+WIKI_HAMI_MINIO_SECRET_KEY=<secret>
+
+WIKI_HAMI_CELERY_BROKER_URL=redis://redis:6379/0
+WIKI_HAMI_CELERY_RESULT_BACKEND=redis://redis:6379/1
+WIKI_HAMI_CELERY_QUEUE=wiki_hami_extraction
+WIKI_HAMI_JOB_STORE_BACKEND=redis
+WIKI_HAMI_JOB_STORE_REDIS_URL=redis://redis:6379/2
+
+WIKI_HAMI_BACKEND_API_KEY=<shared-backend-ai-secret>
+WIKI_HAMI_CALLBACK_URL=http://<backend-service>:8000/api/documents/ai/callback/
+WIKI_HAMI_CALLBACK_TOKEN=<shared-callback-secret>
+```
+
+Never commit real credentials.
 
 ## Docker / deployment
 
-No model image/device changes are required. Existing Compose/CI ownership remains unchanged; deployment continues to load `.env` and run the same API/UI containers.
+The application image is shared by API, worker, and optional UI. The Compose project uses the external `wikio` network and a persistent model cache.
 
 ```bash
 docker compose up -d --build
+docker compose ps
+docker compose logs --tail=100 worker
 ```
 
-Production should keep one Uvicorn worker while models are process-local. Disable `WIKI_HAMI_MINIO_BROWSER_ENABLED` when the Streamlit storage browser/proxy is not required.
+The worker is required in production; without it, requests are accepted but remain queued. Current worker concurrency is intentionally `1` because model instances are process-local and memory-heavy.
 
-## Tests
+Deployment runbook: [docs/deployment.md](docs/deployment.md).
+
+## Verification
 
 ```bash
 pytest -q
 ```
 
-The suite uses mock models/network-free fixtures and covers URL policy, local/minio extraction, orchestration failure isolation, artifact layout, OCR crop exclusion, deterministic visual crops, provenance, transforms, adapters and UI helpers.
+After deployment, verify all of the following:
+
+1. API health passes.
+2. Worker is connected to Redis and consumes `wiki_hami_extraction`.
+3. MinIO health succeeds.
+4. A real Front/Backend upload moves AI job `queued -> processing -> completed`.
+5. MinIO contains per-page artifacts, `OCR.txt`, and `layout.json`.
+6. `GET /jobs/{job_id}` reports `callback_delivered: true`.
+7. Backend document transitions to `ready` and stores the callback `result` paths.
 
 ## Documentation
 
-- [API reference](docs/api.md)
-- [MinIO integration](docs/minio.md)
+Start with [docs/README.md](docs/README.md).
+
 - [Architecture](docs/architecture.md)
-- [Workflows](docs/workflows.md)
-- [Models](docs/models.md)
-- [Deployment](docs/deployment.md)
-- [Contract notes](docs/contracts.md)
+- [Production workflows](docs/workflows.md)
+- [API reference](docs/api.md)
+- [Backend async contract](docs/backend-async-contract.md)
+- [MinIO + layout v2 contract](docs/minio.md)
+- [Canonical contracts](docs/contracts.md)
+- [Models and inference](docs/models.md)
+- [Deployment runbook](docs/deployment.md)

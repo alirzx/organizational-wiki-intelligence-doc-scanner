@@ -1,146 +1,203 @@
-# Extraction V1 API reference
+# Extraction V1 API Reference
 
-Base prefix: `/api/v1`. Interactive OpenAPI/Swagger documentation is available at `/docs`.
+Base prefix: `/api/v1`. Swagger/OpenAPI: `/docs`.
 
-## Integration boundaries
+## Production integration
 
-Primary Backend → AI production integration:
+### Submit asynchronous MinIO document
 
-```text
+```http
 POST /api/v1/extract/minio
+X-API-Key: <shared-backend-ai-key>
+Content-Type: application/json
 ```
 
-The Backend sends one document plus all prepared MinIO page images. Wiki Hami runs all three extraction modules, persists AI-owned outputs back to MinIO, and returns only document processing status.
-
-Engineering/debug endpoints remain available:
-
-```text
-POST /api/v1/ocr
-POST /api/v1/figure-table
-POST /api/v1/stamp-signature
-POST /api/v1/extract
-POST /api/v1/extract/minio/inspect
-```
-
-These call the same in-process services as production. No endpoint performs loopback HTTP calls to another Wiki Hami endpoint.
-
-## Product document request
-
-`POST /api/v1/extract/minio` accepts JSON:
+Request:
 
 ```json
 {
-  "document_id": "123",
+  "document_id": "52",
   "document_metadata": {"source": "minio"},
   "pages": [
     {
-      "image_url": "http://minio:9000/media/documents/123/images/page-001.jpg",
+      "image_url": "http://minio:9000/media/documents/52/images/page-001.jpg",
       "page_number": 1,
-      "page_id": "123:p1"
+      "page_id": "52:p1"
     },
     {
-      "image_url": "http://minio:9000/media/documents/123/images/page-002.jpg",
+      "image_url": "http://minio:9000/media/documents/52/images/page-002.jpg",
       "page_number": 2,
-      "page_id": "123:p2"
+      "page_id": "52:p2"
     }
   ]
 }
 ```
 
-Fields:
+Important fields:
 
 | Field | Required | Meaning |
 |---|---:|---|
-| `document_id` | yes | Logical document identity and output path segment |
+| `document_id` | yes | Stable document identity and MinIO path segment |
 | `document_metadata` | no | Arbitrary document metadata |
-| `pages` | yes | Ordered list of one or more MinIO-backed pages |
-| `pages[].image_url` | yes | MinIO object URL matching configured host/port and bucket policy |
-| `pages[].page_number` | no | Integer >= 1; request order is used as fallback |
-| `pages[].page_id` | no | Defaults to `<document_id>:p<page_number>` during preparation |
+| `pages` | yes | One or more MinIO-backed pages |
+| `pages[].image_url` | yes | URL matching configured MinIO authority/bucket/path policy |
+| `pages[].page_number` | no | Integer >= 1; request order is fallback |
+| `pages[].page_id` | no | Stable page ID; default derived from document/page number |
 | `pages[].filename` | no | Optional filename override |
-| `pages[].metadata` | no | Arbitrary per-page metadata |
+| `pages[].metadata` | no | Arbitrary page metadata |
 
-The URL is parsed only to identify the configured bucket/object. Bytes are read through the authenticated MinIO SDK client. See [MinIO integration](minio.md).
+Request validation rejects duplicate page numbers/IDs and pages outside `documents/{document_id}/images/`.
 
-## Product document response
+Response:
+
+```http
+202 Accepted
+```
+
+```json
+{
+  "job_id": "<job-id>",
+  "document_id": "52",
+  "status": "queued"
+}
+```
+
+`/extract/minio` does not wait for inference. The Celery worker owns production processing and callback delivery.
+
+### Job status / recovery
+
+```http
+GET /api/v1/jobs/{job_id}
+X-API-Key: <shared-backend-ai-key>
+```
+
+States:
+
+```text
+queued | processing | completed | failed
+```
+
+Completed jobs may include:
+
+```json
+{
+  "outputs": {
+    "ocr": "documents/52/OCR.txt",
+    "layout": "documents/52/layout.json",
+    "ocr_dir": "documents/52/OCR/",
+    "figure_table_dir": "documents/52/Figure-Table/",
+    "stamp_signature_dir": "documents/52/Stamp-Signature/"
+  },
+  "callback_delivered": true
+}
+```
+
+The job-status field is named `outputs`. The separate Backend callback success payload uses `result`.
+
+## Production callback
+
+The AI service sends the callback to configured `WIKI_HAMI_CALLBACK_URL`.
+
+```http
+Authorization: Bearer <WIKI_HAMI_CALLBACK_TOKEN>
+Content-Type: application/json
+```
 
 Success:
 
 ```json
 {
-  "document_id": "123",
-  "status": "success",
-  "error": null
+  "job_id": "<job-id>",
+  "document_id": "52",
+  "status": "completed",
+  "result": {
+    "ocr": "documents/52/OCR.txt",
+    "layout": "documents/52/layout.json",
+    "ocr_dir": "documents/52/OCR/",
+    "figure_table_dir": "documents/52/Figure-Table/",
+    "stamp_signature_dir": "documents/52/Stamp-Signature/"
+  }
 }
 ```
 
-Processing/storage failure uses a non-2xx status and the contract shape:
+Failure:
 
 ```json
 {
-  "document_id": "123",
+  "job_id": "<job-id>",
+  "document_id": "52",
   "status": "failed",
-  "error": "..."
+  "error": {
+    "code": "RUNTIMEERROR",
+    "message": "..."
+  }
 }
 ```
 
-The response intentionally excludes the full extraction payload because canonical raw results and crops are persisted in MinIO.
+See [backend-async-contract.md](backend-async-contract.md).
 
-## Product artifact output
+## Product artifacts
 
-For each successful document, Wiki Hami writes:
+Successful production jobs publish:
 
 ```text
 documents/{document_id}/
 ├── OCR/
-│   ├── page-001.json.txt
-│   └── page-001-text.txt
 ├── Figure-Table/
-│   ├── page-001.json.txt
-│   ├── page-001-table-001.png
-│   └── page-001-figure-001.png
 ├── Stamp-Signature/
-│   ├── page-001.json.txt
-│   ├── page-001-stamp-001.png
-│   └── page-001-signature-001.png
-└── OCR.txt
+├── OCR.txt
+└── layout.json
 ```
 
-There are no OCR crops. Visual-module crops use source-image bounding boxes. Filenames are deterministic so retries overwrite the same artifact identities. Before persistence, only the three AI-owned module prefixes are cleaned; Backend-owned `images/`, `main.txt`, and `original.pdf` are not touched.
+`layout.json` is `wiki-hami.layout.v2` and merges all five canonical object types per page. See [minio.md](minio.md).
 
-## Engineering module request
+## Engineering module endpoints
 
-The three isolated module endpoints accept one MinIO-backed page:
+These are synchronous inspection/evaluation surfaces and are not the Backend product orchestration path.
+
+### OCR
+
+```http
+POST /api/v1/ocr
+```
+
+Runs OCR text detection/recognition and paragraph grouping for one MinIO page. Returns `ModulePageResponse` with `paragraph` objects.
+
+### Figure/Table
+
+```http
+POST /api/v1/figure-table
+```
+
+Runs PP-DocLayoutV3 and returns canonical `figure`/`table` objects.
+
+### Stamp/Signature
+
+```http
+POST /api/v1/stamp-signature
+```
+
+Runs RF-DETR and returns canonical `stamp`/`signature` objects.
+
+Typical request:
 
 ```json
 {
-  "document_id": "123",
-  "image_url": "http://minio:9000/media/documents/123/images/page-001.jpg",
+  "document_id": "52",
+  "image_url": "http://minio:9000/media/documents/52/images/page-001.jpg",
   "page_number": 1,
-  "page_id": "123:p1",
+  "page_id": "52:p1",
   "page_metadata": {}
 }
 ```
 
-### OCR
+## Detailed multipart extraction
 
-`POST /api/v1/ocr` performs Paddle text detection/recognition plus paragraph grouping. Successful objects use `type: paragraph`.
+```http
+POST /api/v1/extract
+```
 
-### Figure/Table
-
-`POST /api/v1/figure-table` performs PP-DocLayoutV3 localization and exposes canonical `figure` and `table` objects.
-
-### Stamp/Signature
-
-`POST /api/v1/stamp-signature` performs RF-DETR inference and exposes canonical `stamp` and `signature` objects. Filtered/non-target classes are not returned.
-
-All three return `ModulePageResponse`, including image/transform provenance, detected objects and module status. An empty detection set is still module success with the relevant `no_*_detected` warning.
-
-## Local multipart full extraction
-
-`POST /api/v1/extract` is the multipart local/development workflow.
-
-Fields:
+Multipart fields:
 
 - repeated `images`;
 - `document_id`;
@@ -148,42 +205,76 @@ Fields:
 - optional `pages_metadata_json`;
 - optional `persist_outputs` boolean.
 
-With `persist_outputs=false` it returns the detailed canonical result only. With `persist_outputs=true`, it also publishes the same MinIO product artifacts before returning that detailed result.
+Returns `DocumentExtractionResponse` synchronously.
+
+If `persist_outputs=true`, the same production artifact publisher runs after full success.
 
 ## Detailed MinIO inspection
 
-`POST /api/v1/extract/minio/inspect` accepts the same JSON request as the product endpoint and returns the existing `DocumentExtractionResponse` for Streamlit/testing.
-
-Optional query parameter:
-
-```text
-persist_outputs=true
+```http
+POST /api/v1/extract/minio/inspect
 ```
 
-When enabled, it publishes the same product artifacts without requiring a second inference pass.
+Accepts the same JSON body as production `/extract/minio`, but runs synchronously and returns detailed `DocumentExtractionResponse` for Streamlit/testing.
 
-`DocumentExtractionResponse` includes `pages[]`, flattened `objects[]`, object counts and document processing status. Module failures remain isolated and can produce `partial_success` when persistence is not requested.
+Optional:
 
-## Storage/health endpoints
+```text
+?persist_outputs=true
+```
 
-- `GET /api/v1/health`: process/config liveness; does not contact MinIO or load models.
-- `GET /api/v1/storage/minio/health`: verifies configured bucket connectivity.
-- `GET /api/v1/storage/minio/objects`: internal/dev object browser when enabled.
-- `GET /api/v1/storage/minio/object`: internal/dev object proxy for Streamlit preview when enabled.
+## Health / storage endpoints
 
-## HTTP error semantics
+```text
+GET /api/v1/health
+GET /api/v1/storage/minio/health
+GET /api/v1/storage/minio/objects
+GET /api/v1/storage/minio/object
+```
 
-Product `/extract/minio`:
+`/health` is process/config liveness and does not warm models or verify MinIO.
 
-- `200`: all modules and required MinIO writes succeeded;
-- `404`: referenced input object not found;
-- `422`: invalid request, URL, image or document identifier;
-- `500`: module processing failure;
-- `502`: MinIO read/write/connectivity failure;
-- `503`: MinIO disabled/misconfigured.
+Storage browser/list/object-proxy routes are engineering surfaces controlled by `WIKI_HAMI_MINIO_BROWSER_ENABLED`.
 
-## Canonical detected object
+## Canonical object
 
-Every `DetectedObject` includes `object_id`, `document_id`, `page_id`, `page_number`, `type`, source-coordinate `bbox`, optional polygon, confidence, optional OCR text/raw text, metadata and model provenance.
+Every `DetectedObject` includes:
 
-Object types are `paragraph`, `table`, `figure`, `stamp`, and `signature`. Public coordinates use `exif_corrected_source_pixels`.
+```text
+object_id
+document_id
+page_id
+page_number
+type
+bbox
+polygon (optional)
+confidence
+text (optional)
+raw_text (optional)
+metadata
+provenance
+```
+
+Canonical types:
+
+```text
+paragraph | table | figure | stamp | signature
+```
+
+Coordinates use `exif_corrected_source_pixels`.
+
+## Error semantics
+
+### Submission endpoint
+
+Common errors include:
+
+- `401/403` style authorization failure from API-key dependency;
+- `422` invalid request/document/page/URL policy;
+- `503` queue/job-store/configuration failure.
+
+Model processing errors occur asynchronously and are reflected in job state/callback, not as the original submission HTTP response.
+
+### Engineering synchronous endpoints
+
+Detailed synchronous routes may directly return validation, model, or MinIO errors because they execute work inside the request.

@@ -1,162 +1,186 @@
 # Backend ↔ AI Async Extraction Contract
 
-## Purpose
-
-The production MinIO document endpoint is asynchronous so Backend Celery does not hold an HTTP request open while OCR/layout/model inference runs. The request body is unchanged from the previous product contract.
+This document is the authoritative production integration contract between the Backend and Wiki Hami Extraction V1.
 
 ## 1. Submit extraction
 
-`POST /api/v1/extract/minio`
-
-Production authentication header:
-
 ```http
+POST /api/v1/extract/minio
 X-API-Key: <shared-backend-ai-key>
 Content-Type: application/json
 ```
 
-Request body remains unchanged:
+Request body:
 
 ```json
 {
-  "document_id": "41",
+  "document_id": "52",
   "document_metadata": {"source": "minio"},
   "pages": [
     {
-      "image_url": "http://minio:9000/media/documents/41/images/page-001.jpg",
-      "page_id": "41:p1",
+      "image_url": "http://minio:9000/media/documents/52/images/page-001.jpg",
+      "page_id": "52:p1",
       "page_number": 1
     }
   ]
 }
 ```
 
-Each page URL must resolve to the configured bucket and must be under:
+Rules:
 
-`documents/{document_id}/images/`
+- `document_id` must be a safe single path segment;
+- page numbers and page IDs must be unique within the document request;
+- each page URL must match configured MinIO host/port and bucket;
+- each object key must be under `documents/{document_id}/images/`;
+- maximum page count is controlled by `WIKI_HAMI_MAX_PAGES_PER_DOCUMENT`.
 
-The API validates the request, creates a durable job record, enqueues Celery, and immediately returns:
+Immediate response:
 
 ```http
-HTTP/1.1 202 Accepted
+202 Accepted
 ```
 
 ```json
 {
   "job_id": "<unique-id>",
-  "document_id": "41",
+  "document_id": "52",
   "status": "queued"
 }
 ```
 
-Backend must not wait for OCR completion on this request.
+Backend must persist the returned `job_id` and must not hold the request open waiting for model completion.
 
-## 2. Job states
-
-AI manages these states:
-
-- `queued`: accepted and waiting for worker execution
-- `processing`: worker started processing
-- `completed`: all required modules and MinIO writes completed
-- `failed`: terminal processing/storage error
-
-Recovery/polling endpoint:
-
-`GET /api/v1/jobs/{job_id}`
-
-Use the same `X-API-Key` header in production.
-
-## 3. AI outputs in MinIO
-
-AI writes only AI-owned outputs under `media/documents/{document_id}/`:
+## 2. AI job states
 
 ```text
-media/documents/{document_id}/
-├── main.txt                       # Backend-owned; AI never modifies it
-├── images/                        # Backend-owned input pages
-├── OCR.txt                        # AI: combined OCR text for all pages
-├── layout.json                    # AI: document OCR layout / reading order
-├── OCR/
-│   ├── page-001.json.txt
-│   ├── page-001-text.txt
-│   └── ...
-├── Figure-Table/
-│   ├── page-001.json.txt
-│   ├── page-001-table-001.png
-│   ├── page-001-figure-001.png
-│   └── ...
-└── Stamp-Signature/
-    ├── page-001.json.txt
-    ├── page-001-stamp-001.png
-    ├── page-001-signature-001.png
-    └── ...
+queued -> processing -> completed
+                    \-> failed
 ```
 
-`OCR.txt` is created if absent and overwritten deterministically on a successful rerun.
+Meanings:
 
-`layout.json` is a document-level JSON artifact. It contains every OCR text block with pixel-space `bbox`, text/confidence, and a deterministic 1-based `reading_order` within each page.
+- `queued`: request validated, job stored, task submitted to Celery;
+- `processing`: worker started the task;
+- `completed`: all required modules succeeded and required MinIO artifacts were written;
+- `failed`: terminal model/acquisition/persistence error.
 
-Example:
+## 3. Recovery endpoint
+
+```http
+GET /api/v1/jobs/{job_id}
+X-API-Key: <shared-backend-ai-key>
+```
+
+Example completed response:
 
 ```json
 {
-  "schema_version": "wiki-hami.layout.v1",
-  "document_id": "41",
-  "pages": [
-    {
-      "page_id": "41:p1",
-      "page_number": 1,
-      "blocks": [
-        {
-          "object_id": "...",
-          "type": "paragraph",
-          "bbox": {"x1": 120, "y1": 80, "x2": 900, "y2": 220},
-          "reading_order": 1,
-          "text": "...",
-          "confidence": 0.97
-        }
-      ]
-    }
-  ]
+  "job_id": "<job-id>",
+  "document_id": "52",
+  "status": "completed",
+  "created_at": "...",
+  "updated_at": "...",
+  "outputs": {
+    "ocr": "documents/52/OCR.txt",
+    "layout": "documents/52/layout.json",
+    "ocr_dir": "documents/52/OCR/",
+    "figure_table_dir": "documents/52/Figure-Table/",
+    "stamp_signature_dir": "documents/52/Stamp-Signature/"
+  },
+  "callback_delivered": true
 }
 ```
 
-Current reading order is deterministic top-to-bottom, then x-position within the same visual row. It can later be replaced by a more advanced document-layout reading-order model without changing the callback contract.
+Important: the job-status API uses `outputs`. The Backend success callback uses `result`.
 
-## 4. Completion callback
+## 4. MinIO ownership
 
-Callback URL is configured on the AI service through `WIKI_HAMI_CALLBACK_URL`; it is not added to the request body, so the existing request schema remains stable.
+Bucket default: `media`.
 
-AI authenticates callback requests with:
+Backend-owned and never modified/deleted by AI:
+
+```text
+documents/{id}/original.pdf
+documents/{id}/main.txt
+documents/{id}/images/*
+```
+
+AI-owned:
+
+```text
+documents/{id}/OCR/*
+documents/{id}/Figure-Table/*
+documents/{id}/Stamp-Signature/*
+documents/{id}/OCR.txt
+documents/{id}/layout.json
+```
+
+The callback/job path values are **object keys inside bucket `media`**. Therefore the value is `documents/52/OCR.txt`, not `media/documents/52/OCR.txt`.
+
+## 5. Unified layout artifact
+
+`documents/{id}/layout.json` is document-level schema:
+
+```text
+wiki-hami.layout.v2
+```
+
+It contains all five object types:
+
+```text
+paragraph, table, figure, stamp, signature
+```
+
+Each page includes source dimensions/coordinate space, image and transform metadata, object counts, and a merged `objects[]` list. Each object preserves canonical geometry/content/metadata/provenance and adds per-page `reading_order` plus artifact references.
+
+See [minio.md](minio.md) for the complete schema.
+
+## 6. Success callback
+
+Configured by `WIKI_HAMI_CALLBACK_URL`.
+
+Authentication:
 
 ```http
 Authorization: Bearer <WIKI_HAMI_CALLBACK_TOKEN>
 Content-Type: application/json
 ```
 
-Success callback:
+Payload:
 
 ```json
 {
-  "job_id": "<unique-id>",
-  "document_id": "41",
+  "job_id": "<job-id>",
+  "document_id": "52",
   "status": "completed",
-  "outputs": {
-    "ocr": "documents/41/OCR.txt",
-    "layout": "documents/41/layout.json",
-    "ocr_dir": "documents/41/OCR/",
-    "figure_table_dir": "documents/41/Figure-Table/",
-    "stamp_signature_dir": "documents/41/Stamp-Signature/"
+  "result": {
+    "ocr": "documents/52/OCR.txt",
+    "layout": "documents/52/layout.json",
+    "ocr_dir": "documents/52/OCR/",
+    "figure_table_dir": "documents/52/Figure-Table/",
+    "stamp_signature_dir": "documents/52/Stamp-Signature/"
   }
 }
 ```
 
-Failure callback:
+The key is `result`. Do not change it to `outputs` unless both Backend and AI contracts are versioned together.
+
+Expected Backend behavior:
+
+- validate Bearer token;
+- locate document by `document_id`;
+- require matching `job_id`;
+- store `result` as document processing result;
+- transition processing document to READY;
+- return HTTP 2xx;
+- treat duplicate callbacks to an already-terminal document idempotently.
+
+## 7. Failure callback
 
 ```json
 {
-  "job_id": "<unique-id>",
-  "document_id": "41",
+  "job_id": "<job-id>",
+  "document_id": "52",
   "status": "failed",
   "error": {
     "code": "RUNTIMEERROR",
@@ -165,45 +189,58 @@ Failure callback:
 }
 ```
 
-Callback delivery uses bounded retry/backoff. A callback delivery failure does not change an already-completed extraction back to `failed`; Backend can recover state with `GET /jobs/{job_id}`.
+`error` must contain both `code` and `message`.
 
-## 5. Required AI production configuration
+## 8. Callback delivery semantics
+
+The AI worker retries callback delivery with bounded retry/backoff according to:
 
 ```env
+WIKI_HAMI_CALLBACK_TIMEOUT_SECONDS=10
+WIKI_HAMI_CALLBACK_MAX_ATTEMPTS=3
+```
+
+Callback failure is tracked independently:
+
+```text
+callback_delivered=false
+callback_error=<last delivery exception>
+```
+
+A completed extraction remains `completed` even if callback delivery fails. Backend can reconcile from the job-status endpoint.
+
+## 9. Production configuration
+
+```env
+WIKI_HAMI_MINIO_ENABLED=true
 WIKI_HAMI_MINIO_ENDPOINT=minio:9000
 WIKI_HAMI_MINIO_PUBLIC_BASE_URL=http://minio:9000
 WIKI_HAMI_MINIO_BUCKET=media
+WIKI_HAMI_MINIO_ACCESS_KEY=<secret>
+WIKI_HAMI_MINIO_SECRET_KEY=<secret>
 
 WIKI_HAMI_CELERY_BROKER_URL=redis://redis:6379/0
 WIKI_HAMI_CELERY_RESULT_BACKEND=redis://redis:6379/1
+WIKI_HAMI_CELERY_QUEUE=wiki_hami_extraction
 WIKI_HAMI_JOB_STORE_BACKEND=redis
 WIKI_HAMI_JOB_STORE_REDIS_URL=redis://redis:6379/2
+WIKI_HAMI_JOB_STORE_TTL_SECONDS=604800
 
 WIKI_HAMI_BACKEND_API_KEY=<shared-secret>
-WIKI_HAMI_CALLBACK_URL=http://<backend-service>/<callback-path>
-WIKI_HAMI_CALLBACK_TOKEN=<shared-callback-secret>
+WIKI_HAMI_CALLBACK_URL=http://<backend-service>:8000/api/documents/ai/callback/
+WIKI_HAMI_CALLBACK_TOKEN=<shared-secret>
 ```
 
-The deployment must run both the FastAPI service and at least one Celery worker. For CPU-heavy model inference, worker concurrency should start at `1` unless memory measurements justify more workers.
+The production deployment requires both FastAPI and a Celery worker. Without a worker, submission can return `202` while jobs remain queued.
 
-## 6. Backend workflow
+## 10. End-to-end acceptance criteria
 
-Recommended Backend Celery flow:
+For one real Front upload, integration is considered healthy when all are true:
 
-```text
-Backend Celery
-  -> POST /extract/minio
-  <- 202 {job_id, status=queued}
-  -> store job_id and continue without holding the HTTP request
-
-AI worker
-  -> processing
-  -> model inference
-  -> write OCR.txt / layout.json / per-page artifacts
-  -> completed or failed
-  -> POST callback to Backend
-
-Backend
-  -> update its document/job state from callback
-  -> optionally GET /jobs/{job_id} for recovery/reconciliation
-```
+1. Backend receives `202` and stores the AI `job_id`.
+2. AI job moves `queued -> processing -> completed`.
+3. Per-page artifacts, `OCR.txt`, and `layout.json` exist in MinIO.
+4. `GET /jobs/{job_id}` returns `callback_delivered: true`.
+5. Backend stores the callback `result` paths.
+6. Backend document state becomes READY.
+7. Backend error fields are empty.

@@ -1,119 +1,230 @@
-# Extraction V1 architecture
+# Extraction V1 Architecture
 
 ## Scope
 
-Extraction V1 turns raster document pages into canonical `paragraph`, `figure`, `table`, `stamp`, and `signature` detections. Template creation, document linking, RAG/LLM mapping, table-cell extraction, signature identity and wiki generation remain outside this repository.
+Wiki Hami Extraction V1 converts raster document pages into five canonical object types: `paragraph`, `table`, `figure`, `stamp`, and `signature`. It also persists deterministic per-page artifacts, document OCR text, and a unified document layout for downstream reconstruction.
 
-## Product and local boundaries
+Out of scope: template generation, document linking, RAG/LLM mapping, table-cell extraction, signature identity, stamp interpretation, and final wiki generation.
+
+## Production topology
 
 ```text
-Backend / Celery                              Local inspector
-      |                                             |
-      | one document + all MinIO page URLs          +-- upload pages
-      v                                             |
-POST /api/v1/extract/minio                         +-- select MinIO objects
-      |                                             |
-      +----------------------+----------------------+
-                             v
-                   input acquisition adapter
-                             |
-                             v
-                 shared validation/preprocessing
-                             |
-              +--------------+----------------+
-              |              |                |
-          PaddleOCR     PP-DocLayoutV3       RF-DETR
-              |              |                |
-              +------ canonical module results
-                             |
-                     ExtractionOrchestrator
-                             |
-                 +-----------+-----------+
-                 |                       |
-            merged result           ArtifactPublisher
-            (debug/local)                 |
-                                         v
-                                  MinIO AI outputs
-                                         |
-                                         v
-                                  small product status
+Frontend
+   |
+   v
+Backend / Django + Celery
+   |
+   | stores original.pdf, main.txt, images/* in MinIO
+   | POST /api/v1/extract/minio + X-API-Key
+   v
+Wiki Hami FastAPI
+   |
+   | validate request + MinIO URL policy
+   | create durable job record
+   | enqueue Celery task
+   v
+Redis
+   |  broker /0
+   |  result backend /1
+   |  job-state store /2
+   v
+Wiki Hami Celery worker (concurrency=1)
+   |
+   +--> acquire MinIO page bytes
+   +--> shared preprocessing
+   +--> OCR / PaddleOCR
+   +--> Figure-Table / PP-DocLayoutV3
+   +--> Stamp-Signature / RF-DETR
+   |
+   v
+ExtractionOrchestrator
+   |
+   v
+ArtifactPublisher
+   |
+   +--> OCR/
+   +--> Figure-Table/
+   +--> Stamp-Signature/
+   +--> OCR.txt
+   +--> layout.json v2
+   v
+MinIO
+   |
+   | terminal callback + Bearer token
+   v
+Backend callback endpoint
+   |
+   v
+READY / FAILED
 ```
 
-The primary production endpoint is `/extract/minio`. The isolated `/ocr`, `/figure-table`, and `/stamp-signature` routes remain engineering/debug surfaces. `/extract` remains the multipart local workflow and `/extract/minio/inspect` is the detailed MinIO inspection workflow used by Streamlit.
+The FastAPI request is intentionally short-lived. It returns `202 Accepted` after queueing; inference and persistence run only in the worker.
 
-## Acquisition boundary
+## Component boundaries
 
-MinIO remains isolated under `app/storage/`. Model backends do not know whether image bytes came from multipart upload or object storage. Both input paths converge on `prepare_page()`, which owns validation, Pillow decode, EXIF transpose, RGB conversion, bounded resize and construction of `PreparedPage`.
+### Backend
 
-`WIKI_HAMI_MINIO_ENDPOINT` is the address used by Wiki Hami's MinIO SDK. `WIKI_HAMI_MINIO_PUBLIC_BASE_URL` is the host/port accepted in API-supplied URLs and used when canonical object URLs are built. On the server these are both currently expected to be `minio:9000` because Backend sends `http://minio:9000/media/...`. Local development can use the host-exposed S3 port instead.
+Owns product orchestration and source artifacts:
 
-## Orchestration boundary
+- original upload/document state;
+- page rendering/scanning;
+- `original.pdf`, `main.txt`, `images/*`;
+- AI job ID persistence;
+- terminal callback handling and document state transition.
 
-`ExtractionOrchestrator` still runs all three module services with per-page concurrency and per-module timeout isolation. It now preserves each successful `ModulePageResponse` internally in addition to producing the existing merged `PageExtractionResponse` / `DocumentExtractionResponse`.
+### FastAPI API
 
-That separation is intentional:
+Owns ingress and job submission:
 
-- local/debug callers consume the merged detailed document response;
-- `ArtifactPublisher` consumes the preserved module responses so each module can be serialized independently without reconstructing data from a flattened object list.
+- validates `MinioDocumentRequest`;
+- validates Backend API key;
+- validates page URL bucket/path policy;
+- creates `queued` job state;
+- sends task to configured Celery queue;
+- exposes recovery endpoint `GET /jobs/{job_id}`.
 
-The model services themselves remain storage-agnostic.
+The API process does not perform production model inference for `/extract/minio`.
+
+### Celery worker
+
+Owns production processing:
+
+- transitions job to `processing`;
+- acquires pages from MinIO;
+- runs all three modules;
+- requires full-document success;
+- publishes deterministic artifacts;
+- transitions job to `completed` or `failed`;
+- sends bounded-retry terminal callback.
+
+Worker concurrency is currently `1` because inference models are process-local and memory-heavy.
+
+### Redis
+
+Default logical separation:
+
+```text
+redis://redis:6379/0   Celery broker
+redis://redis:6379/1   Celery result backend
+redis://redis:6379/2   durable AI job-state store
+```
+
+Job-store TTL defaults to seven days and is a recovery/reconciliation mechanism, not the system of record for Backend document state.
+
+### MinIO
+
+Shared object storage. The AI service reads Backend-owned page images and writes only AI-owned artifact keys. MinIO URLs received in requests are parsed and validated; model code never performs arbitrary URL downloads.
+
+## Shared preprocessing
+
+Both uploaded/debug and MinIO-backed pages converge on the same preparation path:
+
+```text
+bytes
+ -> size/decode validation
+ -> Pillow decode
+ -> EXIF transpose
+ -> RGB
+ -> source image metadata
+ -> bounded long-edge resize
+ -> PreparedPage
+```
+
+Public geometry always refers to the EXIF-corrected source page before shared resize: `exif_corrected_source_pixels`.
+
+Adapters restore model-space detections back to this coordinate system before creating `DetectedObject`.
+
+## Model modules
+
+```text
+PreparedPage
+  |
+  +--> OCR service
+  |      PaddleOCR detector + recognizer
+  |      -> OCR lines
+  |      -> geometric paragraph grouping
+  |      -> paragraph DetectedObject
+  |
+  +--> Figure/Table service
+  |      PP-DocLayoutV3
+  |      -> figure/table DetectedObject
+  |
+  +--> Stamp/Signature service
+         RF-DETR
+         -> stamp/signature DetectedObject
+```
+
+Each module returns a `ModulePageResponse`. The orchestrator preserves the module-specific responses for artifact persistence and also builds the merged detailed response used by engineering endpoints.
 
 ## Artifact boundary
 
-`app/artifacts/` owns deterministic product output generation. It receives a completed `DocumentRunResult`, creates raw JSON/text artifacts and visual crops, then writes them through `MinioStorageService`.
+`ArtifactPublisher` is the only component that defines AI-owned deterministic product artifacts.
 
 ```text
 documents/{document_id}/
 ├── OCR/
 ├── Figure-Table/
 ├── Stamp-Signature/
-└── OCR.txt
+├── OCR.txt
+└── layout.json
 ```
 
-Rules:
+`layout.json` is currently `wiki-hami.layout.v2`. It merges all five object types per page and preserves source geometry, text where available, confidence, metadata, provenance, artifact references, and deterministic per-page reading order.
 
-- OCR: per-page canonical JSON-as-TXT + per-page plain extracted text; no crops.
-- Figure/Table: per-page canonical JSON-as-TXT + one PNG crop per detected figure/table.
-- Stamp/Signature: per-page canonical JSON-as-TXT + one PNG crop per detected stamp/signature.
-- document-level `OCR.txt`: aggregate compatibility text expected by Backend.
-- crop geometry comes from canonical source-coordinate bounding boxes applied to `PreparedPage.source_image`.
+See [minio.md](minio.md) for the exact schema.
 
-The publisher never modifies Backend-owned `original.pdf`, `main.txt`, or `images/`.
+## Unified layout and reconstruction
 
-## Retry/idempotency boundary
+`layout.json` is designed as the downstream reconstruction index:
 
-Celery may retry a document. Artifact names are therefore deterministic (`page-001-table-001.png`, etc.). Before publishing a successful rerun, Wiki Hami deletes only the three AI-owned module prefixes and then rewrites them. `OCR.txt` is overwritten by key.
+```text
+one document
+  -> pages[]
+       -> source width/height + coordinate space
+       -> objects[]
+            paragraph | table | figure | stamp | signature
+            bbox
+            optional polygon
+            reading_order
+            content/metadata/provenance
+            artifact references
+```
 
-This prevents stale crops when a later run produces fewer detections while avoiding bucket-wide or Backend-owned deletion.
+For visual reconstruction, consumers should position objects using `bbox`/`polygon` and page dimensions. `reading_order` is a deterministic geometric ordering, not a semantic layout model. Overlapping marks such as stamps/signatures must not be repositioned merely to satisfy reading order.
 
-## Service lifecycle
+Current reading-order key is top-to-bottom, then left-to-right, with deterministic geometry/type/object-ID tie breakers.
 
-Settings, storage, artifact publisher and model services are process-local cached instances. Heavy model objects still initialize lazily on first prediction and remain CPU-configured. MinIO client construction is lazy. No model/device behavior changes as part of this refactor.
+## Retry and idempotency
 
-## Canonical contract
+Artifact keys are deterministic. Before a successful republish the AI service deletes only:
 
-All public detection geometry remains `exif_corrected_source_pixels`. `ImageMetadata.source` records upload or MinIO acquisition provenance; MinIO provenance may include bucket, object key and ETag. Model `Provenance` remains separate and identifies module/backend/model/revision.
+```text
+documents/{id}/OCR/
+documents/{id}/Figure-Table/
+documents/{id}/Stamp-Signature/
+```
 
-Detailed engineering responses retain `pages[]`, flattened `objects[]`, `object_counts` and processing status. The product endpoint intentionally returns only `document_id`, `status`, and optional `error` because extraction artifacts live in MinIO.
+Then it rewrites module artifacts. `OCR.txt` and `layout.json` are overwritten by object key. Backend-owned source objects are never deleted or modified.
+
+This avoids stale visual crops after retries while preserving source data.
 
 ## Failure boundaries
 
-Image acquisition/preparation happens before inference. Invalid MinIO URLs/images are rejected before model execution. Missing objects return 404, storage failures 502 and disabled/misconfigured storage 503.
+Production publication occurs only when the orchestrator reports full success. A module failure prevents successful artifact publication for that run and produces a terminal failed job.
 
-The orchestrator still isolates module exceptions/timeouts. Detailed local/inspection flows can return `partial_success`. Product `/extract/minio` requires complete success before persistence; a failed module produces HTTP 500 and no product publishing attempt.
+Detailed engineering endpoints may expose partial results, but product `/extract/minio` is an asynchronous all-required-modules contract.
 
-MinIO write/cleanup failures produce HTTP 502. Product success is returned only after all required artifact writes finish.
+Callback delivery failure does not rewrite a completed extraction as failed. The job remains completed and Backend can reconcile with `GET /jobs/{job_id}`.
 
-## Security
+## Security boundaries
 
-Backend URLs are not arbitrary HTTP fetch targets. The storage service validates scheme, configured public host/port, configured bucket and object path, then uses the authenticated MinIO client. Output object keys are also normalized and reject empty, `.` or `..` path segments.
+- Backend -> AI: `X-API-Key`.
+- AI -> Backend callback: Bearer token.
+- Secrets are environment/deployment values only.
+- Supplied MinIO URLs must match configured scheme/authority/bucket and expected document image prefix.
+- Object keys reject unsafe path segments.
+- Storage-browser endpoints are engineering surfaces and can be disabled.
 
-Storage credentials remain environment-only. The product account needs read/list/write access and delete permission limited to the AI-owned artifact prefixes for retry cleanup.
+## Process lifecycle
 
-The object listing/proxy endpoints remain internal Streamlit helpers controlled by `WIKI_HAMI_MINIO_BROWSER_ENABLED`.
-
-## Parallelism and resources
-
-Different model families can overlap and each real backend continues to serialize prediction on its shared model instance. Keep one Uvicorn worker unless memory measurements justify model duplication.
-
-Current full-document preparation still retains prepared page images until document orchestration/publishing completes. A future bounded streaming/page-release optimization remains possible for very large documents, but this refactor does not alter model execution semantics or page concurrency.
+Model/service instances are process-local and lazily loaded. A second worker process means a second set of model objects and higher RAM usage. Persistent framework caches avoid repeated weight downloads but do not avoid model initialization per process.

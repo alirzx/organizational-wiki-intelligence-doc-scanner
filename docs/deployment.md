@@ -1,49 +1,39 @@
-# Extraction V1 deployment
+# Extraction V1 Deployment Runbook
 
-## Runtime topology
+## Production topology
 
-The normal deployment remains one FastAPI process plus optional Streamlit. MinIO is an external/shared S3 dependency; Wiki Hami does not require MinIO to run in the same Compose project, but the API container must be able to reach the configured S3 endpoint.
+Production requires three shared dependencies/process roles:
 
 ```text
-Django / Celery -> Wiki Hami API <-> MinIO/S3
-                           |
-                    three CPU models
+Backend
+   |
+   v
+Wiki Hami API ----> Redis ----> Wiki Hami worker
+   |                              |
+   |                              +--> CPU models
+   |                              +--> MinIO writes
+   |                              +--> Backend callback
+   |
+   +--> job-status API
+
+MinIO <---------------------------> API/worker
 ```
 
-Keep one Uvicorn worker while all models are process-local. Every additional process loads another OCR, layout and RF-DETR model set.
+The optional Streamlit UI is an engineering console and is not required for Backend product processing.
 
-## Local Python
+## Required application processes
 
-```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements-dev.txt
-cp .env.example .env
-python run.py --api
-```
+- `api`: FastAPI ingress, validation, job creation, recovery API
+- `worker`: Celery consumer, model inference, artifact publication, callback delivery
+- `ui`: optional Streamlit engineering inspector
 
-Second terminal:
+A deployment without `worker` may still accept `/extract/minio` and return `202`, but jobs will remain queued.
 
-```bash
-source .venv/bin/activate
-python run.py --web
-```
+## Runtime configuration
 
-The base requirements include the official `minio` Python SDK.
+Start from `.env.example` and keep production secrets out of Git.
 
-## Real CPU model dependencies
-
-Install in this order:
-
-```bash
-python -m pip install -r requirements-paddle-cpu.txt \
-  -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
-python -m pip install -r requirements-torch-cpu.txt \
-  --index-url https://download.pytorch.org/whl/cpu
-python -m pip install -r requirements-models.txt
-```
-
-Select:
+### Models
 
 ```env
 WIKI_HAMI_OCR_BACKEND=paddle
@@ -54,15 +44,7 @@ WIKI_HAMI_STAMP_SIGNATURE_BACKEND=rfdetr
 WIKI_HAMI_STAMP_SIGNATURE_DEVICE=cpu
 ```
 
-## MinIO configuration
-
-The current Backend contract sends image URLs such as:
-
-```text
-http://minio:9000/media/documents/123/images/page-001.jpg
-```
-
-Therefore server configuration should match that URL authority/bucket:
+### MinIO
 
 ```env
 WIKI_HAMI_MINIO_ENABLED=true
@@ -74,95 +56,200 @@ WIKI_HAMI_MINIO_SECURE=false
 WIKI_HAMI_MINIO_BUCKET=media
 ```
 
-For local development through the host-exposed S3 port:
+The AI credential requires read/list/write plus delete permission for AI-owned module prefixes. Scope delete permission narrowly where possible.
+
+### Redis / jobs
 
 ```env
-WIKI_HAMI_MINIO_ENABLED=true
-WIKI_HAMI_MINIO_ENDPOINT=192.168.4.209:9002
-WIKI_HAMI_MINIO_PUBLIC_BASE_URL=http://192.168.4.209:9002
-WIKI_HAMI_MINIO_ACCESS_KEY=<secret>
-WIKI_HAMI_MINIO_SECRET_KEY=<secret>
-WIKI_HAMI_MINIO_SECURE=false
-WIKI_HAMI_MINIO_BUCKET=media
+WIKI_HAMI_CELERY_BROKER_URL=redis://redis:6379/0
+WIKI_HAMI_CELERY_RESULT_BACKEND=redis://redis:6379/1
+WIKI_HAMI_CELERY_QUEUE=wiki_hami_extraction
+WIKI_HAMI_JOB_STORE_BACKEND=redis
+WIKI_HAMI_JOB_STORE_REDIS_URL=redis://redis:6379/2
+WIKI_HAMI_JOB_STORE_TTL_SECONDS=604800
 ```
 
-The Console port (for example 9003) is not used by Wiki Hami.
+### Backend integration
 
-`MINIO_PUBLIC_BASE_URL` is also the strict validation policy for backend-provided image URLs. The API never treats those URLs as arbitrary HTTP download targets; bucket/object bytes are read through the configured MinIO SDK client.
-
-Credentials belong in deployment secrets/GitLab `ENV_FILE`, never source control.
-
-### Required MinIO permissions
-
-The AI account is no longer read-only. Product `/extract/minio` writes artifacts and cleans old AI-owned prefixes before a retry. The credential therefore needs the equivalent of:
-
-```text
-ListBucket
-GetObject
-PutObject
-DeleteObject
+```env
+WIKI_HAMI_BACKEND_API_KEY=<shared-backend-ai-secret>
+WIKI_HAMI_CALLBACK_URL=http://<backend-service>:8000/api/documents/ai/callback/
+WIKI_HAMI_CALLBACK_TOKEN=<shared-callback-secret>
+WIKI_HAMI_CALLBACK_TIMEOUT_SECONDS=10
+WIKI_HAMI_CALLBACK_MAX_ATTEMPTS=3
 ```
 
-Scope delete permission to the Wiki Hami AI-owned output area where possible:
+Use the actual Docker DNS alias visible from the AI worker. Do not assume a Compose container name and DNS alias are identical.
 
-```text
-documents/*/OCR/*
-documents/*/Figure-Table/*
-documents/*/Stamp-Signature/*
-```
+## Docker Compose
 
-`documents/*/OCR.txt` also needs write permission. Backend-owned `images/`, `main.txt`, and `original.pdf` are never deleted by the application.
-
-## Docker image
-
-No model/device Dockerfile change is required. The MinIO SDK is already installed through the Python requirements.
+Root `compose.yaml` defines API, worker, and UI on external network `wikio` with shared persistent model cache.
 
 ```bash
-docker build -t wiki-hami-extraction:0.3.0 .
+docker compose up -d --build
+docker compose ps
 ```
 
-The image exposes 8000/8501 and uses `/api/v1/health` for liveness. Liveness does not load models or contact MinIO. Use `/api/v1/storage/minio/health` when storage connectivity must be checked explicitly.
+Production-style Compose is also provided under `deployment/compose.prod.yaml` for externally built images/data roots.
 
-## Compose / GitLab deployment
+The worker command is:
 
-The existing DevOps-owned Compose and GitLab CI files remain structurally unchanged. Compose loads `.env`; GitLab copies the `ENV_FILE` variable to the server before running `docker compose up --build -d`.
+```bash
+python run.py --worker
+```
 
-When MinIO endpoint/bucket/credentials change, update GitLab `ENV_FILE` and start a new pipeline on `main` so the new `.env` is copied and containers are recreated with the new configuration.
+It consumes configured queue `wiki_hami_extraction` with concurrency `1`.
 
-Do not modify Compose network ownership from application code. The API container simply requires DNS/network reachability to `minio:9000` on the DevOps-provided network.
+## Model cache
 
-## Production versus local storage browser
+Persist model caches across container recreation. Current Compose config provides persistent Hugging Face/Paddle/PaddleX cache locations. A cache hit avoids weight redownload but each worker process still initializes model objects in RAM.
 
-The Backend product integration needs:
+Do not increase Uvicorn/Celery process counts casually: every additional inference process can duplicate model memory.
+
+## External network
+
+Compose expects:
 
 ```text
-POST /api/v1/extract/minio
+wikio
 ```
 
-The isolated model and detailed inspection endpoints are engineering surfaces. Streamlit additionally uses MinIO health/list/object-proxy routes for browsing and preview.
+as an externally managed Docker network. Backend, Redis, and MinIO names used in `.env` must resolve on this network.
 
-Set:
+Useful checks:
 
-```env
-WIKI_HAMI_MINIO_BROWSER_ENABLED=false
+```bash
+docker compose exec -T worker getent hosts redis
+docker compose exec -T worker getent hosts minio
+docker compose exec -T worker getent hosts <backend-service>
 ```
 
-when MinIO list/object proxy endpoints should not be exposed in production. If Streamlit is intentionally deployed as an internal engineering console, the flag may remain enabled behind appropriate network/access controls.
+## Health checks
 
-## First run
+API liveness:
 
-1. API starts without loading model weights.
-2. `/api/v1/health` becomes healthy without MinIO/model warm-up.
-3. `/api/v1/storage/minio/health` verifies bucket access.
-4. The first product request reads page objects, validates/prepares images, then lazily initializes model backends as needed.
-5. After all model modules succeed, the artifact publisher cleans only AI-owned module prefixes and writes JSON/text/crop artifacts.
-6. Only after persistence completes does `/extract/minio` return product success.
-7. Later requests reuse on-disk weights and process-local model instances.
+```bash
+curl -fsS http://localhost:8000/api/v1/health
+```
 
-## Operational notes
+MinIO connectivity:
 
-Per-image source objects are bounded by `max_upload_bytes` before full object read. Pillow enforces image decode/pixel validation after acquisition. Product writes are deterministic and retry-safe at the object-key level.
+```bash
+curl -fsS http://localhost:8000/api/v1/storage/minio/health
+```
 
-The API does not currently provide end-user authentication/rate limiting itself. Keep product and dev-storage endpoints behind the deployment network/API gateway appropriate to your environment.
+Worker:
 
-For very large documents, the current request still retains prepared page/source images until orchestration and publishing finish. Monitor process RAM under realistic page counts; bounded page streaming/release is a future performance optimization rather than part of this contract refactor.
+```bash
+docker compose exec -T worker \
+  celery -A app.jobs.celery_app:celery_app inspect ping
+```
+
+Worker logs should show configured queue, Redis connection, task registration, and `ready`.
+
+## Deployment sequence
+
+Recommended rollout:
+
+```bash
+git pull origin main
+docker compose build
+docker compose up -d --force-recreate
+docker compose ps
+```
+
+If only env/secrets changed, containers still need recreation so processes receive the new values.
+
+## Production acceptance test
+
+Use a real Front upload, then verify:
+
+1. Backend stores rendered pages in MinIO.
+2. Backend receives `202 {job_id,status:"queued"}`.
+3. Worker log shows `wiki_hami.process_minio_document[JOB_ID] received`.
+4. Worker finishes successfully.
+5. AI job endpoint reports `status: completed`.
+6. MinIO contains module outputs, `OCR.txt`, and unified `layout.json`.
+7. AI job reports `callback_delivered: true`.
+8. Backend document is `ready`.
+9. Backend `processing_result` contains the five returned output paths.
+10. Backend error fields are empty.
+
+## Useful job check
+
+```bash
+JOB=<job-id>
+docker compose exec -T api python - "$JOB" <<'PY'
+import os, sys, json, requests
+r = requests.get(
+    f"http://localhost:8000/api/v1/jobs/{sys.argv[1]}",
+    headers={"X-API-Key": os.environ["WIKI_HAMI_BACKEND_API_KEY"]},
+    timeout=10,
+)
+print(json.dumps(r.json(), indent=2, ensure_ascii=False))
+PY
+```
+
+Expected terminal success includes:
+
+```json
+{
+  "status": "completed",
+  "callback_delivered": true
+}
+```
+
+## Logs
+
+```bash
+docker compose logs --tail=100 api
+docker compose logs --tail=100 worker
+docker compose logs -f worker
+```
+
+A Celery warning about running as root is currently an operational hardening item rather than an extraction-contract failure. Production hardening should eventually run the worker as a non-root container user.
+
+## GitLab deployment
+
+The repository GitLab pipeline copies the configured env file to the server and runs the Compose deployment on `main`. Treat the GitLab env file/CI variables as the production secret source of truth.
+
+After a documentation-only commit, no runtime deployment is required unless the team wants repository/server revisions aligned. After application or environment changes, rebuild/recreate and run the acceptance test above.
+
+## Failure triage
+
+### Job remains queued
+
+Check worker existence, queue name, Redis DNS/connectivity, and worker logs.
+
+### Extraction completed but Front stays processing
+
+Check:
+
+```text
+callback_delivered
+callback_error
+callback URL DNS/path
+callback token
+Backend callback serializer contract
+job_id/document_id match
+```
+
+### 401 callback
+
+Callback authentication mismatch.
+
+### 400 callback
+
+Inspect Backend response body and serializer expectations. Current successful contract requires top-level `result`.
+
+### Model/native failure
+
+Treat separately from callback/network failures. Review worker traceback and identify module/page. Do not classify every native Paddle failure as concurrency unless reproduced with evidence.
+
+## Security / operational notes
+
+- Do not commit `.env` or secrets.
+- Keep storage-browser routes internal or disable them in production.
+- Restrict MinIO delete permission to AI-owned prefixes.
+- Keep Backend/Redis/MinIO on trusted internal network paths.
+- Consider non-root worker/container execution as the next deployment-hardening step.
