@@ -18,6 +18,19 @@ MODULE_DIRS = {
     ModuleName.STAMP_SIGNATURE: "Stamp-Signature",
 }
 
+MODULE_OBJECT_TYPES = {
+    ModuleName.OCR: {ObjectType.PARAGRAPH},
+    ModuleName.FIGURE_TABLE: {ObjectType.FIGURE, ObjectType.TABLE},
+    ModuleName.STAMP_SIGNATURE: {ObjectType.STAMP, ObjectType.SIGNATURE},
+}
+
+VISUAL_OBJECT_TYPES = {
+    ObjectType.FIGURE,
+    ObjectType.TABLE,
+    ObjectType.STAMP,
+    ObjectType.SIGNATURE,
+}
+
 
 class ArtifactPublisher:
     """Persist deterministic AI-owned artifacts for one document."""
@@ -60,37 +73,121 @@ class ArtifactPublisher:
         return buffer.getvalue()
 
     @staticmethod
-    def _layout_document(run: DocumentRunResult) -> dict:
+    def _crop_key_map(
+        document_prefix: str,
+        page_token: str,
+        module_name: ModuleName,
+        objects: list[DetectedObject],
+    ) -> dict[str, str]:
+        if module_name == ModuleName.OCR:
+            return {}
+
+        directory = MODULE_DIRS[module_name]
+        allowed_types = MODULE_OBJECT_TYPES[module_name] & VISUAL_OBJECT_TYPES
+        counters: dict[ObjectType, int] = {}
+        crop_keys: dict[str, str] = {}
+        for obj in objects:
+            if obj.type not in allowed_types:
+                continue
+            counters[obj.type] = counters.get(obj.type, 0) + 1
+            crop_keys[obj.object_id] = (
+                f"{document_prefix}/{directory}/{page_token}-"
+                f"{obj.type.value}-{counters[obj.type]:03d}.png"
+            )
+        return crop_keys
+
+    @staticmethod
+    def _reading_order_key(obj: dict) -> tuple:
+        bbox = obj["bbox"]
+        return (
+            bbox["y1"],
+            bbox["x1"],
+            bbox["y2"],
+            bbox["x2"],
+            obj["type"],
+            obj["object_id"],
+        )
+
+    @classmethod
+    def _layout_document(cls, run: DocumentRunResult) -> dict:
+        document_prefix = cls._document_prefix(run.response.document_id)
         pages: list[dict] = []
+        document_counts: dict[str, int] = {object_type.value: 0 for object_type in ObjectType}
+
         for page_run in sorted(run.pages, key=lambda item: item.response.page_number):
-            ocr_result = page_run.modules.get(ModuleName.OCR)
-            paragraphs = [] if ocr_result is None else [
-                obj for obj in ocr_result.objects if obj.type == ObjectType.PARAGRAPH
-            ]
-            # Deterministic top-to-bottom reading order. Within the same visual row,
-            # preserve OCR geometry ordering by x coordinate.
-            paragraphs.sort(key=lambda obj: (obj.bbox.y1, obj.bbox.x1, obj.object_id))
-            blocks = [
-                {
-                    "object_id": obj.object_id,
-                    "type": obj.type.value,
-                    "bbox": obj.bbox.model_dump(mode="json"),
-                    "reading_order": index,
-                    "text": obj.raw_text or obj.text,
-                    "confidence": obj.confidence,
-                }
-                for index, obj in enumerate(paragraphs, start=1)
-            ]
+            page_number = page_run.response.page_number
+            page_token = f"page-{page_number:03d}"
+            page_objects: list[dict] = []
+            page_counts: dict[str, int] = {object_type.value: 0 for object_type in ObjectType}
+
+            for module_name in (
+                ModuleName.OCR,
+                ModuleName.FIGURE_TABLE,
+                ModuleName.STAMP_SIGNATURE,
+            ):
+                module_result = page_run.modules.get(module_name)
+                if module_result is None:
+                    continue
+
+                directory = MODULE_DIRS[module_name]
+                raw_artifact = f"{document_prefix}/{directory}/{page_token}.json.txt"
+                crop_keys = cls._crop_key_map(
+                    document_prefix,
+                    page_token,
+                    module_name,
+                    module_result.objects,
+                )
+                allowed_types = MODULE_OBJECT_TYPES[module_name]
+
+                for obj in module_result.objects:
+                    if obj.type not in allowed_types:
+                        continue
+
+                    item = obj.model_dump(mode="json")
+                    item["module"] = module_name.value
+                    item["reading_order"] = 0
+                    item["artifacts"] = {
+                        "module_result": raw_artifact,
+                        "plain_text": (
+                            f"{document_prefix}/{directory}/{page_token}-text.txt"
+                            if module_name == ModuleName.OCR
+                            else None
+                        ),
+                        "crop": crop_keys.get(obj.object_id),
+                    }
+                    page_objects.append(item)
+                    page_counts[obj.type.value] += 1
+                    document_counts[obj.type.value] += 1
+
+            page_objects.sort(key=cls._reading_order_key)
+            for reading_order, obj in enumerate(page_objects, start=1):
+                obj["reading_order"] = reading_order
+
+            image = page_run.response.image.model_dump(mode="json")
+            transform = page_run.response.transform.model_dump(mode="json")
             pages.append(
                 {
                     "page_id": page_run.response.page_id,
-                    "page_number": page_run.response.page_number,
-                    "blocks": blocks,
+                    "page_number": page_number,
+                    "width": image["source_width"],
+                    "height": image["source_height"],
+                    "coordinate_space": image["source_coordinate_space"],
+                    "image": image,
+                    "transform": transform,
+                    "reading_order_method": "bbox_top_to_bottom_then_left_to_right",
+                    "object_count": len(page_objects),
+                    "object_counts": page_counts,
+                    "objects": page_objects,
                 }
             )
+
         return {
-            "schema_version": "wiki-hami.layout.v1",
+            "schema_version": "wiki-hami.layout.v2",
             "document_id": run.response.document_id,
+            "document_metadata": run.response.document_metadata,
+            "page_count": len(pages),
+            "object_count": sum(document_counts.values()),
+            "object_counts": document_counts,
             "pages": pages,
         }
 
@@ -132,20 +229,16 @@ class ArtifactPublisher:
                     aggregate_ocr_pages.append(plain_text.rstrip())
                     continue
 
-                allowed_types = (
-                    {ObjectType.FIGURE, ObjectType.TABLE}
-                    if module_name == ModuleName.FIGURE_TABLE
-                    else {ObjectType.STAMP, ObjectType.SIGNATURE}
+                crop_keys = self._crop_key_map(
+                    document_prefix,
+                    page_token,
+                    module_name,
+                    module_result.objects,
                 )
-                counters: dict[ObjectType, int] = {}
                 for obj in module_result.objects:
-                    if obj.type not in allowed_types:
+                    crop_key = crop_keys.get(obj.object_id)
+                    if crop_key is None:
                         continue
-                    counters[obj.type] = counters.get(obj.type, 0) + 1
-                    crop_key = (
-                        f"{document_prefix}/{directory}/{page_token}-"
-                        f"{obj.type.value}-{counters[obj.type]:03d}.png"
-                    )
                     self.storage.put_bytes(
                         crop_key,
                         self._crop_png(page_run.page.source_image, obj),
