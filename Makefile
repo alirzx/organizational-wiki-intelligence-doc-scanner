@@ -21,7 +21,7 @@ worker:
 	python run.py --worker
 
 test:
-	pytest -q
+	python -m pytest -q
 
 up:
 	docker compose up -d --build

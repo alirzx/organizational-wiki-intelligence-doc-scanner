@@ -38,11 +38,27 @@ Start from `.env.example` and keep production secrets out of Git.
 ```env
 WIKI_HAMI_OCR_BACKEND=paddle
 WIKI_HAMI_OCR_DEVICE=cpu
+WIKI_HAMI_OCR_ENABLE_MKLDNN=false
 WIKI_HAMI_FIGURE_TABLE_BACKEND=pp_doclayout
 WIKI_HAMI_FIGURE_TABLE_DEVICE=cpu
 WIKI_HAMI_STAMP_SIGNATURE_BACKEND=rfdetr
 WIKI_HAMI_STAMP_SIGNATURE_DEVICE=cpu
 ```
+
+The pinned CPU OCR runtime baseline is PaddlePaddle 3.2.2 + PaddleOCR 3.7.0 + PaddleX 3.7.2. oneDNN/MKLDNN is disabled by default for OCR stability unless the exact target runtime has been regression-tested.
+
+### Workload limits
+
+```env
+WIKI_HAMI_MAX_UPLOAD_BYTES=26214400
+WIKI_HAMI_MAX_IMAGE_PIXELS=50000000
+WIKI_HAMI_MAX_PAGES_PER_DOCUMENT=200
+WIKI_HAMI_PREPROCESS_MAX_LONG_EDGE=2500
+WIKI_HAMI_PAGE_CONCURRENCY=4
+WIKI_HAMI_MODULE_TIMEOUT_SECONDS=360
+```
+
+`WIKI_HAMI_MODULE_TIMEOUT_SECONDS` is per module/per page; it is not a whole-document Celery time limit.
 
 ### MinIO
 
@@ -75,7 +91,7 @@ WIKI_HAMI_JOB_STORE_TTL_SECONDS=604800
 WIKI_HAMI_BACKEND_API_KEY=<shared-backend-ai-secret>
 WIKI_HAMI_CALLBACK_URL=http://<backend-service>:8000/api/documents/ai/callback/
 WIKI_HAMI_CALLBACK_TOKEN=<shared-callback-secret>
-WIKI_HAMI_CALLBACK_TIMEOUT_SECONDS=10
+WIKI_HAMI_CALLBACK_TIMEOUT_SECONDS=15
 WIKI_HAMI_CALLBACK_MAX_ATTEMPTS=3
 ```
 
@@ -158,7 +174,7 @@ docker compose up -d --force-recreate
 docker compose ps
 ```
 
-If only env/secrets changed, containers still need recreation so processes receive the new values.
+When dependency pins change, force a fresh image rebuild so the image does not reuse an older dependency layer. If only env/secrets changed, containers still need recreation so processes receive the new values.
 
 ## Production acceptance test
 
@@ -213,7 +229,9 @@ A Celery warning about running as root is currently an operational hardening ite
 
 The repository GitLab pipeline copies the configured env file to the server and runs the Compose deployment on `main`. Treat the GitLab env file/CI variables as the production secret source of truth.
 
-After a documentation-only commit, no runtime deployment is required unless the team wants repository/server revisions aligned. After application or environment changes, rebuild/recreate and run the acceptance test above.
+The current CI command rebuilds through root `compose.yaml`, so Dockerfile requirement changes are picked up during deployment. The CI file itself is intentionally unchanged by this runtime-compatibility work.
+
+After a documentation-only commit, no runtime deployment is required unless the team wants repository/server revisions aligned. After application, dependency, or environment changes, rebuild/recreate and run the acceptance test above.
 
 ## Failure triage
 
@@ -246,7 +264,16 @@ Inspect Backend response body and serializer expectations. Current successful co
 
 Treat separately from callback/network failures. Review worker traceback and identify module/page. Do not classify every native Paddle failure as concurrency unless reproduced with evidence.
 
-## Security / operational notes
+For the current OCR stability baseline, verify all of the following before further diagnosis:
+
+```text
+PaddlePaddle 3.2.2
+PaddleOCR 3.7.0
+PaddleX 3.7.2
+WIKI_HAMI_OCR_ENABLE_MKLDNN=false
+```
+
+### Security / operational notes
 
 - Do not commit `.env` or secrets.
 - Keep storage-browser routes internal or disable them in production.
