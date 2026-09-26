@@ -12,6 +12,26 @@ This document describes the production model/runtime contract for Extraction V1.
 
 Production is currently CPU-oriented. The `.env.example` defaults to mock backends so development/tests can run without loading model frameworks.
 
+## Pinned OCR runtime baseline
+
+The production CPU OCR stack is intentionally pinned rather than allowed to float between rebuilds:
+
+```text
+paddlepaddle 3.2.2
+paddleocr    3.7.0
+paddlex      3.7.2
+```
+
+`requirements-paddle-cpu.txt` owns the PaddlePaddle pin and `requirements-models.txt` owns the PaddleOCR/PaddleX pins. Docker and `make install-models` install from these files so local and container builds use the same compatibility baseline.
+
+For CPU stability, Wiki Hami explicitly passes:
+
+```text
+enable_mkldnn = false
+```
+
+to `PaddleOCR` by default through `WIKI_HAMI_OCR_ENABLE_MKLDNN=false`. PaddleOCR/PaddleX normally enable the oneDNN/MKLDNN CPU path; the project keeps that optimization disabled unless the exact target runtime has been regression-tested. This is a runtime-stability choice, not a model-quality change.
+
 ## Runtime lifecycle
 
 Heavy model objects are loaded lazily on first inference and cached inside the process. Each real backend uses initialization/prediction locking around its shared model instance.
@@ -35,18 +55,9 @@ Increasing worker process count therefore multiplies model memory use.
 
 ## Shared preprocessing boundary
 
-All modules receive the same `PreparedPage` created after:
+All modules receive the same `PreparedPage` created after byte/image validation, Pillow decode, EXIF transpose, RGB conversion, source geometry capture, and bounded shared long-edge resize.
 
-- byte/image validation;
-- Pillow decode;
-- EXIF transpose;
-- RGB conversion;
-- source geometry capture;
-- bounded shared long-edge resize.
-
-Model-specific tensor normalization, padding, architecture-specific resize, etc. remain inside each backend.
-
-Adapters restore detected geometry back to canonical source coordinates before creating `DetectedObject`.
+Model-specific tensor normalization, padding, architecture-specific resize, etc. remain inside each backend. Adapters restore detected geometry back to canonical source coordinates before creating `DetectedObject`.
 
 Public coordinate space:
 
@@ -69,13 +80,20 @@ Baseline components:
 - detector: `PP-OCRv5_server_det`;
 - recognizer: `arabic_PP-OCRv5_mobile_rec`;
 - optional text-line orientation model: `PP-LCNet_x1_0_textline_ori` when enabled;
-- device: CPU by default.
+- device: CPU by default;
+- MKLDNN/oneDNN: disabled by default through `WIKI_HAMI_OCR_ENABLE_MKLDNN=false`.
 
 Paddle produces text lines. Wiki Hami groups these lines geometrically into canonical paragraph objects. Paragraph grouping is intentionally not semantic section reconstruction.
 
 Canonical paragraph contains source-space `bbox`, optional polygon, confidence, normalized `text`, `raw_text`, line/model metadata, and OCR provenance.
 
 Current paragraph polygon is derived from the paragraph union bounding box, so it is rectangular rather than a richer text contour.
+
+### OCR operational notes
+
+The shared PaddleOCR model instance is guarded by a prediction lock. The document orchestrator may keep multiple page pipelines active, but same-family OCR predictions are serialized through this lock.
+
+`WIKI_HAMI_MODULE_TIMEOUT_SECONDS` is a per-module/per-page orchestration timeout; it is not a whole-document Celery time limit. Native Paddle failures such as `RuntimeError: std::exception` are separate from that timeout and should be diagnosed from model/runtime logs and reproducibility.
 
 ### OCR limitations
 
@@ -94,24 +112,9 @@ app/modules/figure_table/pp_doclayout_backend.py
 app/modules/figure_table/adapter.py
 ```
 
-Backend parses model box predictions and maps selected labels to public object types.
-
-Current mapping behavior:
-
-- configured/exact table labels -> `table`;
-- figure/image/chart-style labels -> `figure`;
-- captions/titles are intentionally excluded from public Figure/Table V1 objects.
-
-Metadata retains original model label/class ID.
+Backend parses model box predictions and maps selected labels to public object types. Configured/exact table labels map to `table`; figure/image/chart-style labels map to `figure`; captions/titles are intentionally excluded from public Figure/Table V1 objects. Metadata retains original model label/class ID.
 
 Current PP-DocLayout geometry is parsed as XYXY box and exposed with a rectangular polygon derived from that box.
-
-### Figure/Table limitations
-
-- no cell/row/column extraction;
-- no caption/title association;
-- no semantic reading-order prediction;
-- current polygon does not add shape precision beyond bbox.
 
 ## Stamp/Signature / RF-DETR
 
@@ -128,23 +131,7 @@ Baseline model:
 bluecopa/rf-detr-stamp-signature-detector
 ```
 
-Pinned checkpoint revision/config lives in settings. Public Extraction V1 behavior exposes only:
-
-```text
-stamp
-signature
-```
-
-Non-target classes such as checkbox states are filtered out.
-
-RF-DETR currently produces/restores source-space XYXY boxes; the canonical stamp/signature `polygon` is therefore `null`.
-
-### Stamp/Signature limitations
-
-- no signature identity;
-- no stamp text/semantics interpretation;
-- no overlap deduplication with OCR/other layout objects;
-- no polygon/segmentation contour with the current backend.
+Pinned checkpoint revision/config lives in settings. Public Extraction V1 behavior exposes only `stamp` and `signature`; non-target classes such as checkbox states are filtered out. RF-DETR currently produces/restores source-space XYXY boxes, so the canonical stamp/signature `polygon` is `null`.
 
 ## Unified layout interaction
 
@@ -159,12 +146,6 @@ paragraph + table + figure + stamp + signature
 
 The model services themselves do not assign the final unified reading order. `ArtifactPublisher` performs that merge/order when publishing the document layout.
 
-## Mock backends
-
-Mock backends are deterministic development/test fixtures. They validate orchestration, geometry restoration, artifacts, layout merging, and APIs without network/model downloads.
-
-Mock detections are not model-quality evidence.
-
 ## Model caches
 
 Framework caches should remain persistent across container recreation and outside Git.
@@ -175,26 +156,16 @@ Relevant environment locations:
 HF_HOME
 PADDLE_HOME
 PADDLE_PDX_CACHE_HOME
-WIKI_HAMI_STAMP_SIGNATURE_CACHE_DIR (optional RF-DETR override)
+WIKI_HAMI_STAMP_SIGNATURE_CACHE_DIR
 ```
 
-Root Compose mounts a shared cache volume. Production-style Compose maps a persistent host data root.
-
-Downloaded public weights should not be copied into the repository merely to avoid redownload; use persistent framework caches.
-
-## First-run behavior
-
-The API health endpoint does not load models. Model initialization occurs when the worker handles its first relevant extraction job (or when an engineering endpoint is invoked in the API process).
-
-A cold environment may therefore have significantly higher first-job latency due to model download/initialization.
+Root Compose mounts a shared cache volume. Production-style Compose maps a persistent host data root. Downloaded public weights should remain in framework caches rather than being copied into Git.
 
 ## Operational warnings
 
 Warnings about deprecated Torch/RF-DETR APIs or model optimization should be evaluated separately from extraction failures. They do not by themselves mean a job failed.
 
-The current RF-DETR runtime may report that the checkpoint class count differs from configured `num_classes`; the library uses the checkpoint class count. This warning should eventually be cleaned up in model configuration, but production correctness must be judged from actual mapped output/regression tests rather than the warning alone.
-
-Native Paddle/runtime exceptions should be diagnosed from the page/module traceback and reproducible conditions. Do not assume every native failure is caused by page concurrency without evidence.
+The current RF-DETR runtime may report that the checkpoint class count differs from configured `num_classes`; the library uses the checkpoint class count. This is separate from OCR runtime stability.
 
 ## Production configuration reference
 
@@ -203,6 +174,7 @@ WIKI_HAMI_OCR_BACKEND=paddle
 WIKI_HAMI_OCR_MODEL_ID=PaddlePaddle/arabic_PP-OCRv5_mobile_rec
 WIKI_HAMI_OCR_TEXT_DETECTION_MODEL_NAME=PP-OCRv5_server_det
 WIKI_HAMI_OCR_DEVICE=cpu
+WIKI_HAMI_OCR_ENABLE_MKLDNN=false
 WIKI_HAMI_OCR_SCORE_THRESHOLD=0.45
 WIKI_HAMI_OCR_USE_TEXTLINE_ORIENTATION=true
 

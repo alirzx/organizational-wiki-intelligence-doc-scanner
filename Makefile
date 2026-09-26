@@ -7,7 +7,8 @@ install-dev:
 	python -m pip install -r requirements-dev.txt
 
 install-models:
-	python -m pip install paddlepaddle==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
+	python -m pip install -r requirements-paddle-cpu.txt -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
+	python -m pip install -r requirements-torch-cpu.txt --index-url https://download.pytorch.org/whl/cpu
 	python -m pip install -r requirements-models.txt
 
 api:

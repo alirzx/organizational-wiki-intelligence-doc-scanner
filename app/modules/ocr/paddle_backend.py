@@ -95,6 +95,7 @@ class PaddleOCRBackend:
                 use_doc_unwarping=False,
                 use_textline_orientation=self.settings.ocr_use_textline_orientation,
                 device=device,
+                enable_mkldnn=self.settings.ocr_enable_mkldnn,
             )
         return self._model
 

@@ -12,10 +12,10 @@ class Settings(BaseSettings):
 
     max_upload_bytes: int = 25 * 1024 * 1024
     max_image_pixels: int = 50_000_000
-    max_pages_per_document: int = 100
+    max_pages_per_document: int = 200
     preprocess_max_long_edge: int = 2500
     page_concurrency: int = 4
-    module_timeout_seconds: float = 180.0
+    module_timeout_seconds: float = 360.0
 
     # MinIO / S3 acquisition + AI artifact persistence.
     minio_enabled: bool = False
@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     backend_api_key: str = ""
     callback_url: str = ""
     callback_token: str = ""
-    callback_timeout_seconds: float = 10.0
+    callback_timeout_seconds: float = 15.0
     callback_max_attempts: int = 3
 
     # OCR: PaddleOCR full OCR pipeline.
@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     ocr_model_id: str = "PaddlePaddle/arabic_PP-OCRv5_mobile_rec"
     ocr_text_detection_model_name: str = "PP-OCRv5_server_det"
     ocr_device: str = "cpu"
+    # Stability-first CPU baseline. PaddleOCR/PaddleX enable oneDNN/MKLDNN by
+    # default; keep it disabled unless a target runtime has been regression-tested.
+    ocr_enable_mkldnn: bool = False
     ocr_score_threshold: float = 0.45
     ocr_use_textline_orientation: bool = True
     ocr_paragraph_max_gap_ratio: float = 1.8
