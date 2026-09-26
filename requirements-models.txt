@@ -1,8 +1,9 @@
 -r requirements.txt
-# Install PaddlePaddle inference engine separately for the target platform.
-# CPU reference used by Dockerfile:
-#   python -m pip install paddlepaddle==3.2.0 \
-#     -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
-paddleocr>=3.5,<4
+
+# Production OCR compatibility baseline.
+# PaddleOCR 3.7.x requires PaddleX >=3.7,<3.8.
+paddleocr==3.7.0
+paddlex==3.7.2
+
 rfdetr>=1.8,<2
 huggingface_hub>=0.34,<2
