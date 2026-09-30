@@ -53,10 +53,13 @@ class ArtifactPublisher:
 
     @staticmethod
     def _ocr_plain_text(objects: list[DetectedObject]) -> str:
+        # ``text`` is the conservative layout-aware representation used by humans and
+        # downstream stages. ``raw_text`` remains available in the JSON artifact for
+        # exact OCR/model traceability.
         lines = [
-            (obj.raw_text or obj.text or "").strip()
+            (obj.text or obj.raw_text or "").strip()
             for obj in objects
-            if obj.type == ObjectType.PARAGRAPH and (obj.raw_text or obj.text)
+            if obj.type == ObjectType.PARAGRAPH and (obj.text or obj.raw_text)
         ]
         return "\n\n".join(line for line in lines if line).strip() + ("\n" if lines else "")
 
