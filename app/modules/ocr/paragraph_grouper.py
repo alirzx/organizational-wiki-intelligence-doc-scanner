@@ -17,23 +17,95 @@ from app.modules.ocr.types import OCRLine, OCRParagraph
 from app.schemas.common import BBox, Point, Polygon
 
 
-# Common legal/administrative Persian enumerator sequence seen in regulations.
-# We only accept weak or glued markers when neighboring lines support a sequence,
-# which avoids turning an ordinary sentence beginning with "و ..." into a list item.
-_LIST_SEQUENCE = ("الف", "ب", "ج", "د", "ه", "و", "ز", "ح", "ط", "ی", "ک")
-_MARKER_ALIASES = ("الف", "هـ", "ب", "ج", "د", "ه", "و", "ز", "ح", "ط", "ی", "ي", "ک", "ك")
-_MARKER_CANONICAL = {"هـ": "ه", "ي": "ی", "ك": "ک"}
+# Full Persian alphabetic order used by enumerated legal/administrative lists.
+# Arabic-script glyph variants are canonicalized before sequence checks.
+_PERSIAN_LIST_SEQUENCE = (
+    "الف",
+    "ب",
+    "پ",
+    "ت",
+    "ث",
+    "ج",
+    "چ",
+    "ح",
+    "خ",
+    "د",
+    "ذ",
+    "ر",
+    "ز",
+    "ژ",
+    "س",
+    "ش",
+    "ص",
+    "ض",
+    "ط",
+    "ظ",
+    "ع",
+    "غ",
+    "ف",
+    "ق",
+    "ک",
+    "گ",
+    "ل",
+    "م",
+    "ن",
+    "و",
+    "ه",
+    "ی",
+)
+_ENGLISH_LIST_SEQUENCE = tuple(chr(code) for code in range(ord("A"), ord("Z") + 1))
+
+_PERSIAN_MARKER_ALIASES = (
+    "الف",
+    "هـ",
+    "ب",
+    "پ",
+    "ت",
+    "ث",
+    "ج",
+    "چ",
+    "ح",
+    "خ",
+    "د",
+    "ذ",
+    "ر",
+    "ز",
+    "ژ",
+    "س",
+    "ش",
+    "ص",
+    "ض",
+    "ط",
+    "ظ",
+    "ع",
+    "غ",
+    "ف",
+    "ق",
+    "ک",
+    "ك",
+    "گ",
+    "ل",
+    "م",
+    "ن",
+    "و",
+    "ه",
+    "ی",
+    "ي",
+    "ى",
+)
+_PERSIAN_MARKER_CANONICAL = {"هـ": "ه", "ك": "ک", "ي": "ی", "ى": "ی"}
 _MARKER_SEPARATORS = "-–—ـ.:؛،)"
 _HORIZONTAL_WS_RE = re.compile(r"[^\S\r\n]+")
 
 _STRUCTURAL_START_RE = re.compile(
-    r"^(?:ماده|تبصره|فصل|بخش|بند)"
-    r"(?=$|\s|[-–—ـ.:؛،()0-9۰-۹٠-٩])"
+    r"^(?:ماده|تبصره|فصل|بخش|بند|chapter|section|article|clause)"
+    r"(?=$|\s|[-–—ـ.:؛،()0-9۰-۹٠-٩])",
+    re.IGNORECASE,
 )
 _NUMERIC_LIST_RE = re.compile(
     r"^\s*[\(\[]?[0-9۰-۹٠-٩]+(?:[\)\]]|[-–—ـ.:])\s*"
 )
-_SYMBOL_BULLET_RE = re.compile(r"^\s*[•●▪◦◾■□*]\s*")
+_SYMBOL_BULLET_RE = re.compile(r"^\s*(?:[•●▪◦◾■□*]|[-–—])\s+")
 
 
 def _x_overlap_ratio(a: BBox, b: BBox) -> float:
@@ -66,32 +138,39 @@ def _normalize_inline_whitespace(value: str) -> str:
     return _HORIZONTAL_WS_RE.sub(" ", value.strip())
 
 
-def _canonical_marker(value: str) -> str:
-    return _MARKER_CANONICAL.get(value, value)
+def _canonical_persian_marker(value: str) -> str:
+    return _PERSIAN_MARKER_CANONICAL.get(value, value)
 
 
-def _next_marker(value: str) -> str | None:
+def _sequence_position(kind: str, marker: str) -> int | None:
+    sequence = _PERSIAN_LIST_SEQUENCE if kind == "fa" else _ENGLISH_LIST_SEQUENCE
     try:
-        index = _LIST_SEQUENCE.index(value)
+        return sequence.index(marker)
     except ValueError:
         return None
-    if index + 1 >= len(_LIST_SEQUENCE):
-        return None
-    return _LIST_SEQUENCE[index + 1]
 
 
-def _marker_candidate(text: str) -> tuple[str, str, str] | None:
-    """Return ``(marker, body, strength)`` for a possible Persian list item.
+def _markers_are_sequential(
+    previous: tuple[str, str, str, str],
+    current: tuple[str, str, str, str],
+) -> bool:
+    previous_kind, previous_marker, _, _ = previous
+    current_kind, current_marker, _, _ = current
+    if previous_kind != current_kind:
+        return False
+    previous_position = _sequence_position(previous_kind, previous_marker)
+    current_position = _sequence_position(current_kind, current_marker)
+    return (
+        previous_position is not None
+        and current_position is not None
+        and current_position == previous_position + 1
+    )
 
-    ``strong`` means a visible separator such as ``-`` survived OCR.
-    ``weak`` means only whitespace separates the marker and body.
-    ``glued`` means OCR removed even that whitespace (for example ``حدبیر...``).
-    Weak/glued candidates are not trusted until a neighboring marker sequence confirms
-    them.
-    """
 
+def _persian_marker_candidate(text: str) -> tuple[str, str, str, str] | None:
     value = _normalize_inline_whitespace(text)
-    for alias in _MARKER_ALIASES:
+    # Longest aliases first so ``الف`` is checked before single-letter candidates.
+    for alias in sorted(_PERSIAN_MARKER_ALIASES, key=len, reverse=True):
         if not value.startswith(alias):
             continue
 
@@ -99,39 +178,65 @@ def _marker_candidate(text: str) -> tuple[str, str, str] | None:
         if not tail:
             continue
 
-        marker = _canonical_marker(alias)
+        marker = _canonical_persian_marker(alias)
         if tail[0].isspace():
             body = tail.lstrip()
             if body and body[0] in _MARKER_SEPARATORS:
                 body = body.lstrip(_MARKER_SEPARATORS + " ").strip()
-                return marker, body, "strong"
-            return marker, body.strip(), "weak"
+                return "fa", marker, body, "strong"
+            return "fa", marker, body.strip(), "weak"
 
         if tail[0] in _MARKER_SEPARATORS:
             body = tail.lstrip(_MARKER_SEPARATORS + " ").strip()
-            return marker, body, "strong"
+            return "fa", marker, body, "strong"
 
-        return marker, tail.strip(), "glued"
+        # OCR occasionally glues a Persian list marker to its first word. This is only
+        # trusted later when neighboring markers prove that a list sequence exists.
+        return "fa", marker, tail.strip(), "glued"
 
     return None
 
 
+def _english_marker_candidate(text: str) -> tuple[str, str, str, str] | None:
+    value = _normalize_inline_whitespace(text)
+    match = re.match(r"^([A-Za-z])(?:(\s*[-–—.:)])|(\s*\)))?\s*(.*)$", value)
+    if not match:
+        return None
+
+    marker = match.group(1).upper()
+    separator = match.group(2) or match.group(3)
+    body = (match.group(4) or "").strip()
+    if separator:
+        return "en", marker, body, "strong"
+
+    # A bare ``A text`` form is intentionally weak because ordinary English sentences
+    # often start with the article "A". It is accepted only when a neighboring sequence
+    # such as A/B/C confirms it.
+    if len(value) > 1 and value[1].isspace():
+        return "en", marker, body, "weak"
+    return None
+
+
+def _marker_candidate(text: str) -> tuple[str, str, str, str] | None:
+    return _persian_marker_candidate(text) or _english_marker_candidate(text)
+
+
 def _accepted_list_markers(
     ordered: list[OCRLine],
-) -> dict[int, tuple[str, str, str]]:
-    """Conservatively identify real enumerator lines.
+) -> dict[int, tuple[str, str, str, str]]:
+    """Conservatively identify alphabetic list markers across OCR lines.
 
-    Visible punctuation is authoritative. When punctuation/spacing was lost by OCR,
-    accept the marker only as part of a short-range alphabetical sequence. This handles
-    common OCR outputs such as ``الف وزیر...``, ``ب وزیر...`` and ``حدبیر...`` while
-    avoiding broad language-level guessing.
+    Strong markers with visible punctuation are authoritative. Weak/glued markers are
+    accepted only when neighboring lines establish a real Persian or English alphabetic
+    sequence. This keeps normal prose such as ``و در صورت...`` or ``A service...`` from
+    being split into fake list items.
     """
 
     candidates = [_marker_candidate(line.text) for line in ordered]
     accepted: set[int] = {
         index
         for index, candidate in enumerate(candidates)
-        if candidate is not None and candidate[2] == "strong"
+        if candidate is not None and candidate[3] == "strong"
     }
 
     candidate_indexes = [index for index, candidate in enumerate(candidates) if candidate is not None]
@@ -145,13 +250,12 @@ def _accepted_list_markers(
 
         previous_index = current[-1]
         previous = candidates[previous_index]
-        current_candidate = candidates[index]
-        assert previous is not None and current_candidate is not None
+        candidate = candidates[index]
+        assert previous is not None and candidate is not None
 
-        # Allow one wrapped continuation line between two list markers.
+        # Permit one visual wrapped line between two list-item starts.
         close_enough = index - previous_index <= 2
-        sequential = _next_marker(previous[0]) == current_candidate[0]
-        if close_enough and sequential:
+        if close_enough and _markers_are_sequential(previous, candidate):
             current.append(index)
         else:
             runs.append(current)
@@ -161,26 +265,9 @@ def _accepted_list_markers(
         runs.append(current)
 
     for run in runs:
-        strengths = [candidates[index][2] for index in run if candidates[index] is not None]
-        # Three sequential weak/glued markers are strong evidence of a list. Two are
-        # sufficient when OCR retained punctuation on at least one of them.
+        strengths = [candidates[index][3] for index in run if candidates[index] is not None]
         if len(run) >= 3 or (len(run) >= 2 and "strong" in strengths):
             accepted.update(run)
-
-    # A mature accepted sequence may end with one OCR-glued marker. This is the common
-    # "ز ... / حدبیر ..." failure mode in Persian legal documents.
-    accepted_sorted = sorted(accepted)
-    if len(accepted_sorted) >= 2:
-        last = accepted_sorted[-1]
-        if last + 1 < len(ordered):
-            previous = candidates[last]
-            candidate = candidates[last + 1]
-            if (
-                previous is not None
-                and candidate is not None
-                and _next_marker(previous[0]) == candidate[0]
-            ):
-                accepted.add(last + 1)
 
     return {
         index: candidates[index]
@@ -189,7 +276,10 @@ def _accepted_list_markers(
     }
 
 
-def _is_hard_block_start(text: str, marker: tuple[str, str, str] | None) -> bool:
+def _is_hard_block_start(
+    text: str,
+    marker: tuple[str, str, str, str] | None,
+) -> bool:
     value = _normalize_inline_whitespace(text)
     return bool(
         marker is not None
@@ -199,12 +289,15 @@ def _is_hard_block_start(text: str, marker: tuple[str, str, str] | None) -> bool
     )
 
 
-def _normalized_line(text: str, marker: tuple[str, str, str] | None) -> str:
+def _normalized_line(
+    text: str,
+    marker: tuple[str, str, str, str] | None,
+) -> str:
     value = _normalize_inline_whitespace(text)
     if marker is None:
         return value
 
-    marker_name, body, _ = marker
+    _, marker_name, body, _ = marker
     body = _normalize_inline_whitespace(body)
     if not body:
         return marker_name
@@ -237,9 +330,9 @@ def group_lines_into_paragraphs(
         same_column = _x_overlap_ratio(_union_bbox(current), line.bbox) >= min_x_overlap
         hard_block_start = _is_hard_block_start(line.text, marker)
 
-        # A detected legal/list item is a logical block even when visual line spacing is
-        # identical to the previous row. Otherwise use the original conservative
-        # geometry rule so wrapped sentence lines stay together.
+        # Every detected list item/section start begins a separate paragraph. Wrapped
+        # visual lines without a structural marker stay inside the current paragraph and
+        # retain an explicit newline in ``text``/``raw_text``.
         if (
             not hard_block_start
             and vertical_gap <= max_gap
