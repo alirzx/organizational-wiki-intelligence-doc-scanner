@@ -42,3 +42,18 @@ def test_paddle_backend_allows_explicit_mkldnn_enable(monkeypatch):
     backend._load()
 
     assert captured["enable_mkldnn"] is True
+
+
+def test_paddle_backend_metadata_keeps_existing_detector_and_recognizer_settings():
+    settings = Settings(
+        _env_file=None,
+        ocr_backend="paddle",
+        ocr_model_id="PaddlePaddle/custom_recognizer",
+        ocr_text_detection_model_name="custom_detector",
+    )
+
+    metadata = PaddleOCRBackend(settings).metadata
+
+    assert metadata.backend == "paddle"
+    assert metadata.model_id == "PaddlePaddle/custom_recognizer"
+    assert metadata.detector_id == "custom_detector"

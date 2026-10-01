@@ -322,7 +322,7 @@ with result_tab:
 
 with api_tab:
     st.subheader("Backend ↔ AI asynchronous product contract")
-    st.code('''POST /api/v1/extract/minio\nX-API-Key: <shared key>\n\n{\n  "document_id": "41",\n  "document_metadata": {"source": "minio"},\n  "pages": [{\n    "image_url": "http://minio:9000/media/documents/41/images/page-001.jpg",\n    "page_id": "41:p1",\n    "page_number": 1\n  }]\n}\n\n202 Accepted\n{\n  "job_id": "...",\n  "document_id": "41",\n  "status": "queued"\n}\n\nGET /api/v1/jobs/{job_id}\n\nTerminal callback -> Backend\n{\n  "job_id": "...",\n  "document_id": "41",\n  "status": "completed",\n  "outputs": {\n    "ocr": "documents/41/OCR.txt",\n    "layout": "documents/41/layout.json"\n  }\n}''', language="json")
+    st.code('''POST /api/v1/extract/minio\nX-API-Key: <shared key>\n\n{\n  "document_id": "41",\n  "document_metadata": {"source": "minio"},\n  "pages": [{\n    "image_url": "http://minio:9000/media/documents/41/images/page-001.jpg",\n    "page_id": "41:p1",\n    "page_number": 1\n  }]\n}\n\n202 Accepted\n{\n  "job_id": "...",\n  "document_id": "41",\n  "status": "queued"\n}\n\nGET /api/v1/jobs/{job_id}\n\nTerminal callback -> Backend\n{\n  "job_id": "...",\n  "document_id": "41",\n  "status": "completed",\n  "result": {\n    "ocr": "documents/41/OCR.txt",\n    "layout": "documents/41/layout.json"\n  }\n}''', language="json")
     st.markdown(
         "Production outputs are written under `documents/<document_id>/`: per-page module artifacts, "
         "document-level `OCR.txt`, and `layout.json`. `main.txt` remains Backend-owned and is never modified."

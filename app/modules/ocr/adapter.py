@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.core.config import Settings
+from app.modules.ocr.backend import OCRBackendMetadata
 from app.modules.ocr.paragraph_grouper import group_lines_into_paragraphs
 from app.modules.ocr.types import OCRLine
 from app.preprocessing.transforms import restore_bbox_to_source, restore_polygon_to_source
@@ -15,7 +16,7 @@ def lines_to_detected_objects(
     *,
     page: PreparedPage,
     settings: Settings,
-    backend_name: str,
+    backend_metadata: OCRBackendMetadata,
 ) -> list[DetectedObject]:
     paragraphs = group_lines_into_paragraphs(
         lines,
@@ -51,13 +52,26 @@ def lines_to_detected_objects(
                 metadata={
                     "line_count": len(paragraph.lines),
                     "line_confidences": [round(line.confidence, 6) for line in paragraph.lines],
-                    "text_detection_model": settings.ocr_text_detection_model_name,
-                    "text_recognition_model": settings.ocr_model_id,
+                    **(
+                        {
+                            "text_detection_model": backend_metadata.detector_id,
+                            "text_recognition_model": backend_metadata.model_id,
+                        }
+                        if backend_metadata.detector_id is not None
+                        else {}
+                    ),
+                    **(
+                        {"model_revision": backend_metadata.model_revision}
+                        if backend_metadata.model_revision is not None
+                        else {}
+                    ),
+                    **backend_metadata.object_metadata,
                 },
                 provenance=Provenance(
                     module=ModuleName.OCR,
-                    backend=backend_name,
-                    model_id=settings.ocr_model_id,
+                    backend=backend_metadata.backend,
+                    model_id=backend_metadata.model_id,
+                    model_version=backend_metadata.model_revision,
                 ),
             )
         )

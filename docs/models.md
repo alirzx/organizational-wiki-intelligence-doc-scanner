@@ -6,7 +6,9 @@ This document describes the production model/runtime contract for Extraction V1.
 
 | Module | Backend setting | Baseline model | Default threshold | Canonical output |
 |---|---|---|---:|---|
+| OCR | `mock` | deterministic test line | — | `paragraph` |
 | OCR | `paddle` | `PP-OCRv5_server_det` + `PaddlePaddle/arabic_PP-OCRv5_mobile_rec` | 0.45 | `paragraph` |
+| OCR | `bina_rizeh` | `Reza2kn/Bina-0.2-Rizeh` + bundled `PaddlePaddle/PP-OCRv6_medium_det` | 0.0 | `paragraph` |
 | Figure/Table | `pp_doclayout` | `PaddlePaddle/PP-DocLayoutV3` | 0.45 | `figure`, `table` |
 | Stamp/Signature | `rfdetr` | `bluecopa/rf-detr-stamp-signature-detector` | 0.50 | `stamp`, `signature` |
 
@@ -65,15 +67,25 @@ Public coordinate space:
 exif_corrected_source_pixels
 ```
 
-## OCR / PaddleOCR
+## OCR backends
 
 Main files:
 
 ```text
 app/modules/ocr/paddle_backend.py
+app/modules/ocr/bina_rizeh_backend.py
+app/modules/ocr/backend.py
 app/modules/ocr/paragraph_grouper.py
 app/modules/ocr/adapter.py
 ```
+
+`WIKI_HAMI_OCR_BACKEND` is explicitly validated and supports only `mock`,
+`paddle`, and `bina_rizeh`. It is a fixed in-process registry, not a mechanism
+for dynamically importing arbitrary model code. All real backends return the
+same model-space `OCRLine` representation, then the shared adapter groups lines
+and restores public geometry to `exif_corrected_source_pixels`.
+
+### Paddle fallback
 
 Baseline components:
 
@@ -91,9 +103,33 @@ Current paragraph polygon is derived from the paragraph union bounding box, so i
 
 ### OCR operational notes
 
-The shared PaddleOCR model instance is guarded by a prediction lock. The document orchestrator may keep multiple page pipelines active, but same-family OCR predictions are serialized through this lock.
+Each real backend's shared PaddleOCR model instance is guarded by a prediction lock.
+The document orchestrator may keep multiple page pipelines active, but predictions
+for one backend instance are serialized through that lock.
 
 `WIKI_HAMI_MODULE_TIMEOUT_SECONDS` is a per-module/per-page orchestration timeout; it is not a whole-document Celery time limit. Native Paddle failures such as `RuntimeError: std::exception` are separate from that timeout and should be diagnosed from model/runtime logs and reproducibility.
+
+### Bina Rizeh full-page backend
+
+`bina_rizeh` follows the official `bina_page_ocr.py` design in process. On first
+prediction it fetches only the pinned repository's `inference/` and `detector/`
+directories into the configured Hugging Face cache, then creates one reusable
+PaddleOCR pipeline with those local directories. The full page is detected using
+the bundled `PaddlePaddle/PP-OCRv6_medium_det` revision
+`8e0f56fb2ef86b461d99cfc7ac5c137738985f61`; recognition is Bina revision
+`4e8cf8806c08442276dcb5ed4a112329945a9bbe`.
+
+The official wrapper returns logical Persian line text, raw visual-order text,
+model score, and line boxes. Wiki Hami keeps logical text in `text` and the raw
+visual trace in `raw_text`; it does not synthesize polygons when the upstream
+page output provides only boxes. Bina scores are model scores, not calibrated
+probabilities, so `WIKI_HAMI_OCR_BINA_SCORE_THRESHOLD` is distinct from
+Paddle's `WIKI_HAMI_OCR_SCORE_THRESHOLD`.
+
+Bina targets Persian handwriting and printed text. Its model card does not claim
+unrelated-language preservation or benchmarked English quality. This patch runs
+one selected full-page backend per page; it does not add language detection or
+automatic Persian/English per-line routing.
 
 ### OCR limitations
 
@@ -178,6 +214,12 @@ WIKI_HAMI_OCR_ENABLE_MKLDNN=false
 WIKI_HAMI_OCR_SCORE_THRESHOLD=0.45
 WIKI_HAMI_OCR_USE_TEXTLINE_ORIENTATION=true
 
+# Persian-focused Bina Rizeh full-page pipeline
+WIKI_HAMI_OCR_BACKEND=bina_rizeh
+WIKI_HAMI_OCR_BINA_MODEL_ID=Reza2kn/Bina-0.2-Rizeh
+WIKI_HAMI_OCR_BINA_REVISION=4e8cf8806c08442276dcb5ed4a112329945a9bbe
+WIKI_HAMI_OCR_BINA_SCORE_THRESHOLD=0.0
+
 WIKI_HAMI_FIGURE_TABLE_BACKEND=pp_doclayout
 WIKI_HAMI_FIGURE_TABLE_MODEL_ID=PaddlePaddle/PP-DocLayoutV3
 WIKI_HAMI_FIGURE_TABLE_DEVICE=cpu
@@ -190,3 +232,9 @@ WIKI_HAMI_STAMP_SIGNATURE_SCORE_THRESHOLD=0.50
 ```
 
 For exact default values, treat `app/core/config.py` and `.env.example` as the implementation source of truth.
+
+Use `WIKI_HAMI_OCR_BACKEND=paddle` to roll back without changing API, artifact,
+or layout contracts. The image and Compose configuration install CPU PaddlePaddle;
+`WIKI_HAMI_OCR_DEVICE=gpu:0` requires a separately verified CUDA-compatible
+PaddlePaddle GPU installation and GPU exposure to both the API and Celery worker.
+This repository does not provide or test that GPU deployment path.

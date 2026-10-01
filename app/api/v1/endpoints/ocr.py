@@ -22,7 +22,8 @@ storage = get_minio_storage_service()
         "Engineering/debug OCR endpoint. Send one MinIO image URL to exercise the same OCR service "
         "used by the product document workflow. Wiki Hami validates the configured MinIO host/bucket, "
         "retrieves the object through its authenticated MinIO client, performs shared preprocessing, "
-        "then runs PaddleOCR and paragraph grouping. Product backend integration uses /extract/minio."
+        "then runs the configured OCR backend and paragraph grouping. Product backend integration uses "
+        "/extract/minio."
     ),
     responses={
         404: {"description": "MinIO object not found"},

@@ -45,7 +45,28 @@ WIKI_HAMI_STAMP_SIGNATURE_BACKEND=rfdetr
 WIKI_HAMI_STAMP_SIGNATURE_DEVICE=cpu
 ```
 
+For Persian-focused Bina Rizeh full-page OCR, keep the same CPU image and cache
+volume, then select the pinned release:
+
+```dotenv
+WIKI_HAMI_OCR_BACKEND=bina_rizeh
+WIKI_HAMI_OCR_DEVICE=cpu
+WIKI_HAMI_OCR_BINA_MODEL_ID=Reza2kn/Bina-0.2-Rizeh
+WIKI_HAMI_OCR_BINA_REVISION=4e8cf8806c08442276dcb5ed4a112329945a9bbe
+WIKI_HAMI_OCR_BINA_SCORE_THRESHOLD=0.0
+```
+
+The Bina backend lazily downloads only its bundled `inference/` and `detector/`
+directories to `HF_HOME`, then reuses its in-process PaddleOCR instance. Roll
+back by setting `WIKI_HAMI_OCR_BACKEND=paddle`; no API, queue, or artifact
+configuration changes are required.
+
 The pinned CPU OCR runtime baseline is PaddlePaddle 3.2.2 + PaddleOCR 3.7.0 + PaddleX 3.7.2. oneDNN/MKLDNN is disabled by default for OCR stability unless the exact target runtime has been regression-tested.
+
+This image is CPU-oriented. Bina's upstream wrapper accepts `gpu:0`, but a CPU
+PaddlePaddle wheel cannot use it. A GPU deployment remains unverified here until
+the target CUDA/PaddlePaddle wheel is selected and GPU devices are exposed to both
+the API process (engineering OCR endpoint) and the Celery worker.
 
 ### Workload limits
 

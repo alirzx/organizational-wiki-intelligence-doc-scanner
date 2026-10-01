@@ -32,7 +32,7 @@ Wiki Hami Celery worker (concurrency=1)
    |
    +--> acquire MinIO page bytes
    +--> shared preprocessing
-   +--> OCR / PaddleOCR
+   +--> OCR / selected full-page backend
    +--> Figure-Table / PP-DocLayoutV3
    +--> Stamp-Signature / RF-DETR
    |
@@ -140,7 +140,7 @@ Adapters restore model-space detections back to this coordinate system before cr
 PreparedPage
   |
   +--> OCR service
-  |      PaddleOCR detector + recognizer
+  |      configured full-page detector + recognizer
   |      -> OCR lines
   |      -> geometric paragraph grouping
   |      -> paragraph DetectedObject

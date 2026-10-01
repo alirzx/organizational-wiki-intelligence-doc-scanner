@@ -1,6 +1,10 @@
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+SUPPORTED_OCR_BACKENDS = frozenset({"mock", "paddle", "bina_rizeh"})
 
 
 class Settings(BaseSettings):
@@ -46,7 +50,8 @@ class Settings(BaseSettings):
     callback_timeout_seconds: float = 15.0
     callback_max_attempts: int = 3
 
-    # OCR: PaddleOCR full OCR pipeline.
+    # OCR: selectable full-page pipelines. Paddle-specific settings remain below
+    # for backward compatibility.
     ocr_backend: str = "mock"
     ocr_model_id: str = "PaddlePaddle/arabic_PP-OCRv5_mobile_rec"
     ocr_text_detection_model_name: str = "PP-OCRv5_server_det"
@@ -56,6 +61,12 @@ class Settings(BaseSettings):
     ocr_enable_mkldnn: bool = False
     ocr_score_threshold: float = 0.45
     ocr_use_textline_orientation: bool = True
+    # Bina ships a full-page pipeline: its Persian recognizer plus a bundled,
+    # pinned PP-OCRv6 detector. Its score is passed to Bina/PaddleOCR directly
+    # and is not calibrated to the Paddle fallback threshold above.
+    ocr_bina_model_id: str = "Reza2kn/Bina-0.2-Rizeh"
+    ocr_bina_revision: str = "4e8cf8806c08442276dcb5ed4a112329945a9bbe"
+    ocr_bina_score_threshold: float = 0.0
     ocr_paragraph_max_gap_ratio: float = 1.8
     ocr_paragraph_min_x_overlap: float = 0.15
 
@@ -92,6 +103,15 @@ class Settings(BaseSettings):
     @property
     def table_label_set(self) -> set[str]:
         return {value.strip().lower() for value in self.table_labels.split(",") if value.strip()}
+
+    @field_validator("ocr_backend")
+    @classmethod
+    def validate_ocr_backend(cls, value: str) -> str:
+        backend = value.strip().lower()
+        if backend not in SUPPORTED_OCR_BACKENDS:
+            supported = ", ".join(sorted(SUPPORTED_OCR_BACKENDS))
+            raise ValueError(f"ocr_backend must be one of: {supported}")
+        return backend
 
 
 @lru_cache

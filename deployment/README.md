@@ -30,7 +30,7 @@ Use `.env.example` as the setting reference. Production requires real model back
 Core values:
 
 ```env
-WIKI_HAMI_OCR_BACKEND=paddle
+WIKI_HAMI_OCR_BACKEND=paddle  # or bina_rizeh for the Persian-focused Bina page pipeline
 WIKI_HAMI_OCR_ENABLE_MKLDNN=false
 WIKI_HAMI_FIGURE_TABLE_BACKEND=pp_doclayout
 WIKI_HAMI_STAMP_SIGNATURE_BACKEND=rfdetr

@@ -22,7 +22,7 @@ Redis / Celery queue
       v
 Wiki Hami worker (concurrency=1)
       |
-      +--> PaddleOCR                -> paragraph
+      +--> configured OCR backend   -> paragraph
       +--> PP-DocLayoutV3           -> figure, table
       +--> RF-DETR                  -> stamp, signature
       |
@@ -46,7 +46,7 @@ The public production request schema is stable. `POST /api/v1/extract/minio` ret
 
 Canonical object types:
 
-- `paragraph` — PaddleOCR text detection/recognition + Wiki Hami paragraph grouping
+- `paragraph` — configured full-page OCR text detection/recognition + Wiki Hami paragraph grouping
 - `table` — PP-DocLayoutV3
 - `figure` — PP-DocLayoutV3
 - `stamp` — RF-DETR
@@ -248,6 +248,22 @@ WIKI_HAMI_BACKEND_API_KEY=<shared-backend-ai-secret>
 WIKI_HAMI_CALLBACK_URL=http://<backend-service>:8000/api/documents/ai/callback/
 WIKI_HAMI_CALLBACK_TOKEN=<shared-callback-secret>
 ```
+
+For a Persian-focused Bina Rizeh deployment, replace the OCR selection above with:
+
+```dotenv
+WIKI_HAMI_OCR_BACKEND=bina_rizeh
+WIKI_HAMI_OCR_DEVICE=cpu
+WIKI_HAMI_OCR_BINA_MODEL_ID=Reza2kn/Bina-0.2-Rizeh
+WIKI_HAMI_OCR_BINA_REVISION=4e8cf8806c08442276dcb5ed4a112329945a9bbe
+WIKI_HAMI_OCR_BINA_SCORE_THRESHOLD=0.0
+```
+
+Roll back without code changes by restoring `WIKI_HAMI_OCR_BACKEND=paddle`.
+Both real OCR backends lazily reuse models per process and share the persistent
+Hugging Face cache. Bina is Persian-focused; this service does not add automatic
+Persian/English language detection or per-line routing, and Bina does not claim
+benchmark-backed English accuracy.
 
 Never commit real credentials.
 

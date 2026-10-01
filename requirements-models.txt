@@ -1,6 +1,7 @@
 -r requirements.txt
 
-# Production OCR compatibility baseline.
+# Production OCR compatibility baseline. This provides both the Paddle fallback
+# and Bina Rizeh's published PaddleOCR >=3.3,<4 full-page runtime.
 # PaddleOCR 3.7.x requires PaddleX >=3.7,<3.8.
 paddleocr==3.7.0
 paddlex==3.7.2

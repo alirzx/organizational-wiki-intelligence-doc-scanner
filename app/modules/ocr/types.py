@@ -9,6 +9,7 @@ class OCRLine:
     confidence: float
     bbox: BBox
     polygon: Polygon | None = None
+    raw_text: str | None = None
 
 
 @dataclass(frozen=True)

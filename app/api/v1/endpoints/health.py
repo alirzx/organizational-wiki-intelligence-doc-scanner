@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.core.config import get_settings
+from app.modules.ocr.backend import create_ocr_backend
 
 router = APIRouter(tags=["Health"])
 settings = get_settings()
@@ -15,12 +16,13 @@ settings = get_settings()
     ),
 )
 async def health():
+    ocr_metadata = create_ocr_backend(settings).metadata
     return {
         "status": "ok",
         "service": settings.app_name,
         "schema_version": settings.schema_version,
         "modules": {
-            "ocr": {"backend": settings.ocr_backend, "model_id": settings.ocr_model_id},
+            "ocr": {"backend": ocr_metadata.backend, "model_id": ocr_metadata.model_id},
             "figure_table": {
                 "backend": settings.figure_table_backend,
                 "model_id": settings.figure_table_model_id,

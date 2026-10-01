@@ -13,6 +13,7 @@ import numpy as np
 from PIL import Image
 
 from app.core.config import Settings
+from app.modules.ocr.backend import OCRBackendMetadata
 from app.modules.ocr.types import OCRLine
 from app.schemas.common import BBox, Point, Polygon
 
@@ -72,6 +73,14 @@ class PaddleOCRBackend:
         self._model: Any | None = None
         self._init_lock = Lock()
         self._predict_lock = Lock()
+
+    @property
+    def metadata(self) -> OCRBackendMetadata:
+        return OCRBackendMetadata(
+            backend="paddle",
+            model_id=self.settings.ocr_model_id,
+            detector_id=self.settings.ocr_text_detection_model_name,
+        )
 
     def _load(self) -> Any:
         if self._model is not None:

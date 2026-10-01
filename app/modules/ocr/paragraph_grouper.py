@@ -348,7 +348,7 @@ def group_lines_into_paragraphs(
     paragraphs: list[OCRParagraph] = []
     for group in groups:
         bbox = _union_bbox(group)
-        raw_text = "\n".join(line.text for line in group)
+        raw_text = "\n".join(line.raw_text if line.raw_text is not None else line.text for line in group)
 
         normalized_lines: list[str] = []
         for line in group:
