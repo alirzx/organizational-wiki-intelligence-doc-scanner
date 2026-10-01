@@ -4,6 +4,16 @@ Production-oriented document extraction service for the Wiki Hami organizational
 
 Template generation, document linking, semantic/RAG stages, table-cell extraction, signature identity, and final wiki generation are intentionally outside this repository.
 
+## ML-based Content Integrity Grouping
+
+Document-scoped grouping is an optional additive stage that joins OCR blocks into paragraphs, lists, and heading/list sections, including conservative consecutive-page continuations. It preserves the five existing object types and source-coordinate page geometry. Enable it with `WIKI_HAMI_GROUPING_ENABLED=true` after placing a validated native LightGBM package at `WIKI_HAMI_GROUPING_MODEL_PATH`. The default remains the existing heuristic output.
+
+Semantic similarity is independently optional. Set `WIKI_HAMI_SEMANTIC_FEATURES_ENABLED=true` and configure `OLLAMA_BASE_URL` plus `OLLAMA_EMBEDDING_MODEL`; `fallback` mode continues without semantics or returns exact heuristic output when the model is unavailable, while `fail_fast` surfaces a sanitized error. Ollama is never required for heuristic deployments.
+
+Before: page-local OCR may split one paragraph or concatenate unrelated list items. After: `content_groups` records stable ordered members and one page-local span per page, `content-groups.json` persists the document view, and learned `OCR.txt` renders every cross-page group once. Limits include OCR-dependent atomic blocks, conservative page-boundary candidates, and model quality tied to representative reviewed annotations.
+
+Commands: build data with `python scripts/build_grouping_dataset.py`, train with `python scripts/train_grouping_model.py`, evaluate with `python scripts/evaluate_grouping_model.py`, export review cases with `python scripts/export_grouping_review.py`, and benchmark with `python scripts/benchmark_grouping.py`.
+
 ## Production status
 
 The production path is asynchronous:

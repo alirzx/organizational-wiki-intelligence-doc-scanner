@@ -94,6 +94,7 @@ class JobError(BaseModel):
 class JobOutputPaths(BaseModel):
     ocr: str | None = None
     layout: str | None = None
+    content_groups: str | None = None
     ocr_dir: str | None = None
     figure_table_dir: str | None = None
     stamp_signature_dir: str | None = None

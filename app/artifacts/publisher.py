@@ -191,6 +191,8 @@ class ArtifactPublisher:
             "page_count": len(pages),
             "object_count": sum(document_counts.values()),
             "object_counts": document_counts,
+            "content_group_count": len(run.response.content_groups),
+            "grouping": run.response.grouping.model_dump(mode="json"),
             "pages": pages,
         }
 
@@ -250,7 +252,10 @@ class ArtifactPublisher:
                     written.append(crop_key)
 
         aggregate_key = f"{document_prefix}/OCR.txt"
-        aggregate_text = "\n\n".join(text for text in aggregate_ocr_pages if text).strip()
+        if run.response.content_groups and run.response.grouping.mode.value.startswith("learned"):
+            aggregate_text = "\n\n".join(group.text for group in sorted(run.response.content_groups, key=lambda item: item.group_order)).strip()
+        else:
+            aggregate_text = "\n\n".join(text for text in aggregate_ocr_pages if text).strip()
         if aggregate_text:
             aggregate_text += "\n"
         self.storage.put_text(aggregate_key, aggregate_text)
@@ -263,4 +268,16 @@ class ArtifactPublisher:
             content_type="application/json; charset=utf-8",
         )
         written.append(layout_key)
+        content_groups_key = f"{document_prefix}/content-groups.json"
+        self.storage.put_text(
+            content_groups_key,
+            self._json_text({
+                "schema_version": "wiki-hami.content-groups.v1",
+                "document_id": run.response.document_id,
+                "grouping": run.response.grouping.model_dump(mode="json"),
+                "content_groups": [group.model_dump(mode="json") for group in run.response.content_groups],
+            }),
+            content_type="application/json; charset=utf-8",
+        )
+        written.append(content_groups_key)
         return written

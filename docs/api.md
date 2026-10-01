@@ -1,5 +1,7 @@
 # Extraction V1 API Reference
 
+Document responses may include additive `content_groups` and `grouping` fields. Job and callback `outputs` may include `content_groups: documents/{id}/content-groups.json`; all existing keys remain required/compatible. Cross-page groups expose separate page-local spans rather than a cross-page bbox.
+
 Base prefix: `/api/v1`. Swagger/OpenAPI: `/docs`.
 
 ## Production integration

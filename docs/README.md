@@ -5,13 +5,14 @@ This directory is the operational and integration reference for **Extraction V1*
 ## Read in this order
 
 1. [architecture.md](architecture.md) — system boundaries and component ownership
-2. [workflows.md](workflows.md) — end-to-end production, debug, retry, and failure flows
-3. [backend-async-contract.md](backend-async-contract.md) — authoritative Backend ↔ AI request/job/callback contract
-4. [minio.md](minio.md) — bucket ownership, artifact paths, and `layout.json` v2
-5. [api.md](api.md) — endpoint reference
-6. [contracts.md](contracts.md) — canonical identity, geometry, status, and persistence rules
-7. [models.md](models.md) — model backends, normalization boundaries, caches, and limitations
-8. [deployment.md](deployment.md) — production topology, configuration, rollout, and verification
+2. [architecture-graph.md](architecture-graph.md) — runtime, code, and artifact-ownership diagrams
+3. [workflows.md](workflows.md) — end-to-end production, debug, retry, and failure flows
+4. [backend-async-contract.md](backend-async-contract.md) — authoritative Backend ↔ AI request/job/callback contract
+5. [minio.md](minio.md) — bucket ownership, artifact paths, and `layout.json` v2
+6. [api.md](api.md) — endpoint reference
+7. [contracts.md](contracts.md) — canonical identity, geometry, status, and persistence rules
+8. [models.md](models.md) — model backends, normalization boundaries, caches, and limitations
+9. [deployment.md](deployment.md) — production topology, configuration, rollout, and verification
 
 ## Production invariants
 

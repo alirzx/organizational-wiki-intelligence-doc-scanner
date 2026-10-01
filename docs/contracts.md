@@ -227,3 +227,6 @@ Model-specific backends own:
 - tokenization or architecture-specific preparation.
 
 The public adapter boundary always returns canonical source-space objects.
+# Content integrity grouping (additive)
+
+`DocumentExtractionResponse` retains every required V1 field and adds `content_groups` plus `grouping`. Each group has ordered members, a stable group ID/type/confidence, and ordered `page_spans`. A span bbox is the union of members on that page only; numeric geometry is never unioned across pages. Paragraph projections remain `type=paragraph` and carry group references in metadata. The optional asynchronous job/callback output adds `content_groups` without changing existing output keys.

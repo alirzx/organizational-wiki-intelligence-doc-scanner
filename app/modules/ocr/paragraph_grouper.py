@@ -108,6 +108,23 @@ _NUMERIC_LIST_RE = re.compile(
 _SYMBOL_BULLET_RE = re.compile(r"^\s*(?:[•●▪◦◾■□*]|[-–—])\s+")
 
 
+# Correct Unicode definitions. Earlier revisions carried UTF-8 literals decoded
+# through a legacy code page, so real OCR Persian glyphs could never match.
+_PERSIAN_LIST_SEQUENCE = (
+    "الف", "ب", "ج", "د", "ه", "و", "ز", "ح", "ط", "ی", "ک", "ل", "م", "ن",
+    "س", "ع", "ف", "ص", "ق", "ر", "ش", "ت", "ث", "خ", "ذ", "ض", "ظ", "غ",
+)
+_PERSIAN_MARKER_ALIASES = _PERSIAN_LIST_SEQUENCE + ("پ", "چ", "ژ", "گ", "هـ", "ك", "ي", "ى")
+_PERSIAN_MARKER_CANONICAL = {"هـ": "ه", "ك": "ک", "ي": "ی", "ى": "ی"}
+_MARKER_SEPARATORS = "-–—ـ.:؛،)"
+_STRUCTURAL_START_RE = re.compile(
+    r"^(?:ماده|تبصره|فصل|بخش|بند|chapter|section|article|clause)"
+    r"(?=$|\s|[-–—ـ.:؛،()0-9۰-۹٠-٩])", re.IGNORECASE,
+)
+_NUMERIC_LIST_RE = re.compile(r"^\s*[\(\[]?[0-9۰-۹٠-٩]+(?:[\)\]]|[-–—ـ.:])\s*")
+_SYMBOL_BULLET_RE = re.compile(r"^\s*(?:[•●▪◦‣■□*]|[-–—])\s+")
+
+
 def _x_overlap_ratio(a: BBox, b: BBox) -> float:
     overlap = max(0.0, min(a.x2, b.x2) - max(a.x1, b.x1))
     denom = max(1.0, min(a.width, b.width))

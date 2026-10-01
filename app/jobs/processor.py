@@ -11,6 +11,19 @@ from app.schemas.storage import MinioDocumentRequest
 from app.utils.ids import new_request_id
 
 
+def document_output_paths(document_id: str) -> dict[str, str]:
+    """Stable required outputs plus the additive content-group artifact."""
+    prefix = f"documents/{document_id}"
+    return {
+        "ocr": f"{prefix}/OCR.txt",
+        "layout": f"{prefix}/layout.json",
+        "content_groups": f"{prefix}/content-groups.json",
+        "ocr_dir": f"{prefix}/OCR/",
+        "figure_table_dir": f"{prefix}/Figure-Table/",
+        "stamp_signature_dir": f"{prefix}/Stamp-Signature/",
+    }
+
+
 def _processing_error(run) -> str:
     failures: list[str] = []
     for page in run.response.pages:

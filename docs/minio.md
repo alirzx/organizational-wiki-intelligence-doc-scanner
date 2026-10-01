@@ -1,5 +1,7 @@
 # MinIO Integration and Artifact Contract
 
+Learned grouping additionally writes `documents/{document_id}/content-groups.json`. `layout.json` remains `wiki-hami.layout.v2` and gains additive grouping diagnostics/counts and paragraph group metadata. Per-page OCR files keep page fragments; learned root `OCR.txt` renders document groups once. Disabled or fallback mode preserves legacy page concatenation.
+
 ## Bucket and ownership
 
 Default bucket:

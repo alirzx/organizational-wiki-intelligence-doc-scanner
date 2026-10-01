@@ -6,11 +6,19 @@ from time import perf_counter
 from app.core.config import Settings
 from app.modules.figure_table.service import FigureTableService
 from app.modules.ocr.service import OCRService
+from app.modules.ocr.adapter import groups_to_detected_objects
 from app.modules.stamp_signature.service import StampSignatureService
 from app.preprocessing.types import PreparedPage
 from app.schemas.detection import DetectedObject, ObjectType
-from app.schemas.extraction import DocumentExtractionResponse, ModulePageResponse, PageExtractionResponse
+from app.schemas.extraction import ContentGroup as ContentGroupSchema, DocumentExtractionResponse, GroupingDiagnostics, ModulePageResponse, PageExtractionResponse
 from app.schemas.status import ModuleName, ModuleStatus, ProcessingState, ProcessingStatus
+from app.text_processing.candidate_generator import CandidateConfig
+from app.text_processing.classifiers.base import BlockRelationshipClassifier, GroupingModelError
+from app.text_processing.classifiers.lightgbm_classifier import LightGBMRelationshipClassifier
+from app.text_processing.feature_extractor import feature_schema
+from app.text_processing.types import GroupingMode, TextBlock
+from app.text_processing.embeddings.base import TextEmbedder
+from app.orchestration.paragraph_resolver import resolve_paragraphs
 
 
 @dataclass
@@ -34,11 +42,83 @@ class ExtractionOrchestrator:
         ocr: OCRService | None = None,
         figure_table: FigureTableService | None = None,
         stamp_signature: StampSignatureService | None = None,
+        grouping_classifier: BlockRelationshipClassifier | None = None,
+        grouping_embedder: TextEmbedder | None = None,
     ):
         self.settings = settings
         self.ocr = ocr or OCRService(settings)
         self.figure_table = figure_table or FigureTableService(settings)
         self.stamp_signature = stamp_signature or StampSignatureService(settings)
+        self.grouping_classifier = grouping_classifier
+        self.grouping_embedder = grouping_embedder
+
+    def _apply_learned_grouping(self, document_id: str, page_runs: list[PageRunResult]):
+        if not self.settings.grouping_enabled:
+            return [], GroupingDiagnostics(mode=GroupingMode.HEURISTIC_DISABLED)
+        classifier = self.grouping_classifier or LightGBMRelationshipClassifier(
+            self.settings.grouping_model_path, feature_schema()
+        )
+        blocks: list[TextBlock] = []
+        for page_run in page_runs:
+            ocr_result = page_run.modules.get(ModuleName.OCR)
+            if ocr_result is None:
+                continue
+            ordinal = 0
+            for obj in ocr_result.objects:
+                if obj.type != ObjectType.PARAGRAPH:
+                    continue
+                blocks.append(TextBlock(
+                    block_id=obj.object_id, document_id=document_id, page_id=obj.page_id,
+                    page_number=obj.page_number, content_ordinal=ordinal,
+                    original_text=obj.raw_text or obj.text or "", normalized_text=obj.text or obj.raw_text or "",
+                    bbox=obj.bbox, polygon=obj.polygon, ocr_confidence=obj.confidence,
+                    page_width=page_run.response.image.source_width,
+                    page_height=page_run.response.image.source_height,
+                    metadata={"source_object_id": obj.object_id},
+                ))
+                ordinal += 1
+        if not blocks:
+            return [], GroupingDiagnostics(mode=GroupingMode.LEARNED, model_package_id=classifier.package_id)
+        resolution = resolve_paragraphs(
+            blocks, classifier,
+            candidate_config=CandidateConfig(
+                reading_lookahead=self.settings.grouping_candidate_reading_window,
+                max_pairs=self.settings.grouping_candidate_max_pairs_per_block * max(1, len(blocks)),
+                cross_page_window=self.settings.grouping_candidate_cross_page_window,
+                max_page_distance=self.settings.grouping_candidate_max_page_distance,
+            ),
+            embedder=self.grouping_embedder,
+            semantic_failure_policy=self.settings.semantic_failure_policy,
+        )
+        projections = groups_to_detected_objects(
+            resolution.groups, document_id=document_id, backend_name="grouping",
+            model_id=classifier.package_id,
+        )
+        for page_run in page_runs:
+            local = [item for item in projections if item.page_number == page_run.response.page_number]
+            ocr_result = page_run.modules.get(ModuleName.OCR)
+            if ocr_result is not None:
+                page_run.modules[ModuleName.OCR] = ocr_result.model_copy(update={"objects": local})
+            other = [item for item in page_run.response.objects if item.type != ObjectType.PARAGRAPH]
+            combined = sorted(other + local, key=lambda item: (item.bbox.y1, item.bbox.x1, item.type.value))
+            page_run.response = page_run.response.model_copy(update={"objects": combined})
+        public_groups = [ContentGroupSchema.model_validate({
+            "group_id": group.group_id, "group_order": group.group_order,
+            "group_type": group.group_type, "text": group.text, "raw_text": group.raw_text,
+            "confidence": group.confidence, "confidence_method": group.confidence_method,
+            "members": [member.__dict__ for member in group.members],
+            "page_spans": [span.__dict__ for span in group.page_spans], "cross_page": group.cross_page,
+            "metadata": group.metadata,
+        }) for group in resolution.groups]
+        diagnostics = GroupingDiagnostics(
+            mode=(GroupingMode.LEARNED if resolution.semantic_mode != "unavailable" else GroupingMode.LEARNED_WITHOUT_SEMANTICS),
+            model_package_id=classifier.package_id,
+            feature_schema_version=feature_schema().version,
+            semantic_mode=resolution.semantic_mode,
+            counts={"blocks": len(blocks), "candidates": len(resolution.predictions), "groups": len(public_groups)},
+            timings_ms=resolution.metrics or {},
+        )
+        return public_groups, diagnostics
 
     @staticmethod
     def _page_state(statuses: list[ModuleStatus]) -> ProcessingState:
@@ -138,6 +218,17 @@ class ExtractionOrchestrator:
             *(self._run_page(page, request_id, page_semaphore) for page in pages)
         )
         page_runs = sorted(page_runs, key=lambda item: item.response.page_number)
+        try:
+            content_groups, grouping = self._apply_learned_grouping(document_id, page_runs)
+        except (GroupingModelError, ValueError, RuntimeError) as exc:
+            if self.settings.semantic_failure_policy == "fail_fast":
+                raise
+            content_groups = []
+            grouping = GroupingDiagnostics(
+                mode=GroupingMode.HEURISTIC_FALLBACK,
+                fallback_reason=type(exc).__name__,
+                semantic_mode="unavailable" if self.settings.semantic_features_enabled else "disabled",
+            )
         page_results = [item.response for item in page_runs]
 
         objects = [obj for page in page_results for obj in page.objects]
@@ -175,6 +266,8 @@ class ExtractionOrchestrator:
                 duration_ms=duration,
                 warnings=warnings,
             ),
+            content_groups=content_groups,
+            grouping=grouping,
         )
         return DocumentRunResult(response=response, pages=page_runs)
 

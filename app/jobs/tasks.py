@@ -6,7 +6,7 @@ from app.core.config import get_settings
 from app.core.runtime import get_job_store
 from app.jobs.callback import deliver_callback
 from app.jobs.celery_app import celery_app
-from app.jobs.processor import process_minio_payload
+from app.jobs.processor import document_output_paths, process_minio_payload
 from app.schemas.storage import MinioDocumentRequest
 
 
@@ -71,15 +71,7 @@ def process_minio_document(self, payload_data: dict, job_id: str) -> dict:
 
         return callback_payload
 
-    prefix = f"documents/{payload.document_id}"
-
-    outputs = {
-        "ocr": f"{prefix}/OCR.txt",
-        "layout": f"{prefix}/layout.json",
-        "ocr_dir": f"{prefix}/OCR/",
-        "figure_table_dir": f"{prefix}/Figure-Table/",
-        "stamp_signature_dir": f"{prefix}/Stamp-Signature/",
-    }
+    outputs = document_output_paths(payload.document_id)
 
     store.update(
         job_id,

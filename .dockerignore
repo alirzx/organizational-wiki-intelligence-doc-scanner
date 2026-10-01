@@ -5,6 +5,7 @@
 !.env.example
 .venv
 .venv.*
+venv
 __pycache__
 .pytest_cache
 .mypy_cache
@@ -15,3 +16,14 @@ __pycache__
 *.log
 models/
 data/outputs/
+data/grouping/*.jsonl
+reports/grouping/
+dist/
+*.egg-info/
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+.vscode/
+.idea/
+coverage/

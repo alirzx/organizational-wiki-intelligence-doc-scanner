@@ -1,5 +1,9 @@
 # Models and Inference
 
+## Content grouping lifecycle
+
+Annotations use the JSONL contract in `specs/001-content-integrity-grouping/contracts/`. Build the reviewed, document-disjoint dataset with `build_grouping_dataset.py`; train the seeded LightGBM classifier with `train_grouping_model.py`; inspect per-class precision/recall/F1, macro and weighted F1, confusion matrix, PR/ROC AUC, candidate recall, heuristic deltas, and gain/split feature importance; then evaluate held-out scenarios before activating the package path. Packages contain native `model.txt`, metadata, metrics, confusion matrix, and feature-importance CSV with SHA-256 checksums—never pickle/joblib. `export_grouping_review.py` produces uncertain/guard-rejected examples without embeddings. Known limits are OCR quality, annotation coverage, conservative cross-page windows, and latency from optional remote embeddings; measure the latter with `benchmark_grouping.py` and a warm-cache run.
+
 This document describes the production model/runtime contract for Extraction V1. Model quality benchmarking and later semantic processing are outside this repository.
 
 ## Production model matrix

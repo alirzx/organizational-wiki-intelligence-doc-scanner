@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -59,6 +60,41 @@ class Settings(BaseSettings):
     ocr_paragraph_max_gap_ratio: float = 1.8
     ocr_paragraph_min_x_overlap: float = 0.15
 
+    # Document-scoped content-integrity grouping. Disabled by default so existing
+    # deployments retain the V1 heuristic paragraph contract until explicitly
+    # enabled with a validated model package.
+    grouping_enabled: bool = False
+    grouping_model_path: str = "models/grouping/current"
+    grouping_merge_threshold: float = Field(default=0.75, ge=0, le=1)
+    grouping_uncertain_lower: float = Field(default=0.55, ge=0, le=1)
+    grouping_candidate_reading_window: int = Field(default=4, ge=1)
+    grouping_candidate_cross_page_window: int = Field(default=3, ge=1)
+    grouping_candidate_max_page_distance: int = Field(default=1, ge=0)
+    grouping_candidate_max_pairs_per_block: int = Field(default=25, ge=1)
+
+    semantic_features_enabled: bool = False
+    semantic_failure_policy: str = "fallback"  # fallback | fail_fast
+    embedding_provider: str = "ollama"
+    ollama_base_url: str = Field(
+        default="http://127.0.0.1:11434",
+        validation_alias=AliasChoices("OLLAMA_BASE_URL", "WIKI_HAMI_OLLAMA_BASE_URL"),
+    )
+    ollama_embedding_model: str = Field(
+        default="embeddinggemma",
+        validation_alias=AliasChoices(
+            "OLLAMA_EMBEDDING_MODEL",
+            "WIKI_HAMI_OLLAMA_EMBEDDING_MODEL",
+        ),
+    )
+    ollama_embedding_timeout_seconds: float = Field(default=30.0, gt=0)
+    ollama_embedding_batch_size: int = Field(default=32, ge=1)
+    ollama_embedding_dimensions: int = 768
+    ollama_embedding_truncate: bool = False
+    ollama_embedding_keep_alive: str = "5m"
+    embedding_cache_max_entries: int = Field(default=4096, ge=1)
+    embedding_prompt_profile: str = "sentence_similarity_v1"
+    embedding_max_attempts: int = Field(default=2, ge=1, le=2)
+
     # Layout localization.
     figure_table_backend: str = "mock"
     figure_table_model_id: str = "PaddlePaddle/PP-DocLayoutV3"
@@ -92,6 +128,28 @@ class Settings(BaseSettings):
     @property
     def table_label_set(self) -> set[str]:
         return {value.strip().lower() for value in self.table_labels.split(",") if value.strip()}
+
+    @model_validator(mode="after")
+    def validate_grouping_settings(self) -> "Settings":
+        if self.grouping_uncertain_lower > self.grouping_merge_threshold:
+            raise ValueError(
+                "grouping_uncertain_lower must be <= grouping_merge_threshold"
+            )
+        if self.semantic_failure_policy not in {"fallback", "fail_fast"}:
+            raise ValueError(
+                "semantic_failure_policy must be 'fallback' or 'fail_fast'"
+            )
+        if self.embedding_provider != "ollama":
+            raise ValueError("embedding_provider must be 'ollama' in v1")
+        if not self.ollama_base_url.startswith(("http://", "https://")):
+            raise ValueError("ollama_base_url must use http or https")
+        if self.ollama_embedding_dimensions not in {128, 256, 512, 768}:
+            raise ValueError(
+                "ollama_embedding_dimensions must be one of 128, 256, 512, or 768"
+            )
+        if not self.ollama_embedding_keep_alive.strip():
+            raise ValueError("ollama_embedding_keep_alive must not be empty")
+        return self
 
 
 @lru_cache

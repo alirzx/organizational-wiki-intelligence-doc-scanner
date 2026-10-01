@@ -1,5 +1,9 @@
 # Extraction V1 Deployment Runbook
 
+## Optional grouping and Ollama
+
+Grouping is off by default. Mount a validated native model package and set `WIKI_HAMI_GROUPING_ENABLED=true` to enable it. Semantic evidence is a second independent switch; if enabled in Compose, `OLLAMA_BASE_URL` defaults to `http://host.docker.internal:11434`. On Linux the Compose `host-gateway` mapping provides that name. Use the Ollama service name instead when both run on the same Docker network. Keep `WIKI_HAMI_SEMANTIC_FAILURE_POLICY=fallback` for availability; neither Ollama nor LightGBM is imported on heuristic-only startup.
+
 ## Production topology
 
 Production requires three shared dependencies/process roles:
