@@ -6,34 +6,55 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import random
+import sys
+import math
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 
 
 ALLOWED_LABELS = {"SAME_GROUP", "NEW_GROUP"}
 ALLOWED_SPLITS = {"train", "validation", "test", "unassigned"}
-ALLOWED_REASONS = {"reading_window", "same_column", "spatial_near", "structural_match", "page_boundary", "manual"}
+from app.text_processing.types import CandidateReason
+ALLOWED_REASONS = {reason.value for reason in CandidateReason}
 
 
 def validate_record(record: dict) -> list[str]:
+    if not isinstance(record,dict):
+        return ['invalid:record']
     errors: list[str] = []
     for key in ("pair_id", "document_id", "source_id", "block_a", "block_b", "label"):
         if key not in record:
             errors.append(f"missing:{key}")
+    for key in ('pair_id','document_id','source_id'):
+        if not isinstance(record.get(key),str) or not record[key]:
+            errors.append(f'invalid:{key}')
     if record.get("label") not in ALLOWED_LABELS:
         errors.append("invalid:label")
     if record.get("split", "unassigned") not in ALLOWED_SPLITS:
         errors.append("invalid:split")
-    if not set(record.get("candidate_reasons", [])) <= ALLOWED_REASONS:
+    similarity = record.get('semantic_similarity')
+    if similarity is not None and (not isinstance(similarity,(int,float)) or not math.isfinite(similarity) or not -1 <= similarity <= 1):
+        errors.append('invalid:semantic_similarity')
+    reasons = record.get('candidate_reasons',['manual'])
+    if not isinstance(reasons,list) or not reasons or any(not isinstance(r,str) or r not in ALLOWED_REASONS for r in reasons):
         errors.append("invalid:candidate_reasons")
     for name in ("block_a", "block_b"):
         block = record.get(name, {})
+        if not isinstance(block,dict):
+            errors.append(f'invalid:{name}'); continue
+        if not all(isinstance(block.get(key),int) for key in ('page_number','content_ordinal','page_width','page_height')):
+            errors.append(f'invalid:{name}:dimensions'); continue
+        if not isinstance(block.get('text'),str) or not isinstance(block.get('page_id'),str) or not block.get('page_id'):
+            errors.append(f'invalid:{name}:text_or_page')
         if block.get("page_number", 0) < 1 or block.get("content_ordinal", -1) < 0:
             errors.append(f"invalid:{name}:order")
         if block.get("page_width", 0) < 1 or block.get("page_height", 0) < 1:
             errors.append(f"invalid:{name}:dimensions")
         confidence = block.get("confidence")
-        if confidence is not None and not 0 <= confidence <= 1:
+        if confidence is not None and (not isinstance(confidence,(int,float)) or not 0 <= confidence <= 1):
             errors.append(f"invalid:{name}:confidence")
         bbox = block.get("bbox", {})
+        if not isinstance(bbox,dict) or any(not isinstance(bbox.get(k),(int,float)) or not math.isfinite(bbox[k]) for k in ('x1','y1','x2','y2')):
+            errors.append(f'invalid:{name}:bbox'); continue
         if bbox.get("x2", 0) <= bbox.get("x1", 0) or bbox.get("y2", 0) <= bbox.get("y1", 0):
             errors.append(f"invalid:{name}:bbox")
     return errors

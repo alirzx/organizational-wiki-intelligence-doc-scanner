@@ -1,9 +1,20 @@
 from fastapi import FastAPI
+from contextlib import asynccontextmanager
+import asyncio
 
 from app.api.v1.router import router as v1_router
 from app.core.config import get_settings
 
 settings = get_settings()
+
+
+@asynccontextmanager
+async def lifespan(application):
+    try:
+        yield
+    finally:
+        from app.core.runtime import get_extraction_orchestrator
+        await asyncio.to_thread(get_extraction_orchestrator().close)
 
 TAGS_METADATA = [
     {"name": "OCR", "description": "Engineering OCR endpoint for one MinIO image."},
@@ -16,6 +27,7 @@ TAGS_METADATA = [
 ]
 
 app = FastAPI(
+    lifespan=lifespan,
     title=settings.app_name,
     version="0.4.0",
     description=(

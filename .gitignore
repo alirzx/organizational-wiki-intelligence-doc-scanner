@@ -20,4 +20,11 @@ Thumbs.db
 *.swp
 .vscode/
 .idea/
-
+ocr output
+roadmap
+samples
+specs
+PERFORMORT.md
+TASKS.md
+ai-doc-scanner*
+.artifacts

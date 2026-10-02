@@ -77,6 +77,7 @@ class GroupingDiagnostics(BaseModel):
     counts: dict[str, int] = Field(default_factory=dict)
     timings_ms: dict[str, float] = Field(default_factory=dict)
     embedding: dict[str, Any] = Field(default_factory=dict)
+    candidates: dict[str, Any] = Field(default_factory=dict)
 
 
 class ModulePageResponse(BaseModel):

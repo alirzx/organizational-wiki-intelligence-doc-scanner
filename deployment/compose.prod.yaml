@@ -14,6 +14,7 @@ services:
     volumes:
       - ${WIKI_HAMI_DATA_ROOT:-/var/lib/wiki-hami}/cache:/var/lib/wiki-hami/cache
       - ${WIKI_HAMI_DATA_ROOT:-/var/lib/wiki-hami}/outputs:/app/data/outputs
+      - ${WIKI_HAMI_DATA_ROOT:-/var/lib/wiki-hami}/models/grouping:/app/models/grouping:ro
     shm_size: "2gb"
     restart: unless-stopped
     healthcheck:
@@ -38,6 +39,7 @@ services:
     volumes:
       - ${WIKI_HAMI_DATA_ROOT:-/var/lib/wiki-hami}/cache:/var/lib/wiki-hami/cache
       - ${WIKI_HAMI_DATA_ROOT:-/var/lib/wiki-hami}/outputs:/app/data/outputs
+      - ${WIKI_HAMI_DATA_ROOT:-/var/lib/wiki-hami}/models/grouping:/app/models/grouping:ro
     shm_size: "2gb"
     restart: unless-stopped
     healthcheck:

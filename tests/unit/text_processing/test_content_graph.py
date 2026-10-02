@@ -7,7 +7,7 @@ def test_threshold_boundaries_and_singletons():
     blocks = [make_block("a", "a"), make_block("b", "b", ordinal=1), make_block("c", "c", ordinal=2)]
     pairs = [make_candidate(blocks[0], blocks[1]), make_candidate(blocks[1], blocks[2])]
     predictions = [prediction_from_score(pairs[0], 0.75), prediction_from_score(pairs[1], 0.55)]
-    result = resolve_components(blocks, predictions)
+    result = resolve_components(blocks, predictions, candidates=pairs)
     assert result.components == (("a", "b"), ("c",))
     assert len(result.accepted) == 1 and len(result.uncertain) == 1
 
@@ -20,6 +20,6 @@ def test_transitive_bridge_and_incompatible_columns_are_guarded():
     ]
     pairs = [make_candidate(blocks[0], blocks[1]), make_candidate(blocks[1], blocks[2])]
     predictions = [prediction_from_score(pair, score) for pair, score in zip(pairs, (0.9, 0.85))]
-    result = resolve_components(blocks, predictions, max_component_size=2)
+    result = resolve_components(blocks, predictions, candidates=pairs, max_component_size=2)
     assert result.components == (("a", "b"), ("c",))
     assert result.rejected[0].decision.value == "guard_rejected"

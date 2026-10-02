@@ -20,16 +20,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt requirements-models.txt requirements-paddle-cpu.txt requirements-torch-cpu.txt ./
 
 ARG INSTALL_MODELS=true
-RUN python -m pip install --upgrade pip && \
-    if [ "$INSTALL_MODELS" = "true" ]; then \
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+RUN if [ "$INSTALL_MODELS" = "true" ]; then \
       python -m pip install -r requirements-paddle-cpu.txt \
-        -i https://www.paddlepaddle.org.cn/packages/stable/cpu/ && \
-      python -m pip install -r requirements-torch-cpu.txt \
-        --index-url https://download.pytorch.org/whl/cpu && \
-      python -m pip install -r requirements-models.txt; \
-    else \
-      python -m pip install -r requirements.txt; \
+        -i https://www.paddlepaddle.org.cn/packages/stable/cpu/; \
     fi
+
+RUN if [ "$INSTALL_MODELS" = "true" ]; then \
+      python -m pip install --no-deps -r requirements-torch-cpu.txt \
+        --index-url https://download.pytorch.org/whl/cpu; \
+    fi
+
+# Resolve CPU Torch dependencies with the application from the selected PyPI index.
+ARG PYPI_INDEX_URL=https://pypi.org/simple
+RUN if [ "$INSTALL_MODELS" = "true" ]; then \
+      python -m pip install --index-url "$PYPI_INDEX_URL" \
+        -r requirements-torch-cpu.txt -r requirements-models.txt \
+        -c requirements-paddle-cpu.txt; \
+    else \
+      python -m pip install --index-url "$PYPI_INDEX_URL" -r requirements.txt; \
+    fi && python -m pip check
+
+COPY requirements-grouping.txt ./
+ARG INSTALL_GROUPING=true
+RUN if [ "$INSTALL_GROUPING" = "true" ]; then \
+      python -m pip install --index-url "$PYPI_INDEX_URL" -r requirements-grouping.txt; \
+    fi && python -m pip check
 
 COPY . .
 

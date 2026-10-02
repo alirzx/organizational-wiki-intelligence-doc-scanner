@@ -19,4 +19,7 @@ def test_candidates_are_deterministic_deduplicated_and_reason_merged():
 
 def test_candidate_growth_is_bounded():
     blocks = [make_block(str(i), f"line {i}", ordinal=i, y1=10*i+1, y2=10*i+9) for i in range(100)]
-    assert len(generate_candidates(blocks, CandidateConfig(max_pairs=17))) == 17
+    pairs = generate_candidates(blocks, CandidateConfig(max_pairs=17))
+    # Optional cap cannot remove mandatory local continuations. Work stays bounded by lookahead.
+    assert 99 <= len(pairs) <= len(blocks)*3+17
+    assert {(str(i),str(i+1)) for i in range(99)} <= {(p.block_a_id,p.block_b_id) for p in pairs}

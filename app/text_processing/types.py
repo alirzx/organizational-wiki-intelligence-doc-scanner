@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import cached_property
 from hashlib import sha256
 import json
 import math
@@ -17,6 +18,12 @@ class CandidateReason(StrEnum):
     STRUCTURAL_MATCH = "structural_match"
     PAGE_BOUNDARY = "page_boundary"
     MANUAL = "manual"
+    ADJACENT_SAME_PAGE = "adjacent_same_page"
+    ADJACENT_CROSS_PAGE = "adjacent_cross_page"
+    SAME_COLUMN_NEARBY = "same_column_nearby"
+    HEADING_TO_BODY = "heading_to_body"
+    LIST_CONTINUATION = "list_continuation"
+    GEOMETRY_OVERLAP = "geometry_overlap"
 
 
 class RelationshipLabel(StrEnum):
@@ -49,6 +56,7 @@ class MemberRole(StrEnum):
 
 
 class GroupingMode(StrEnum):
+    CLUSTERED = "clustered"
     LEARNED = "learned"
     LEARNED_WITHOUT_SEMANTICS = "learned_without_semantics"
     HEURISTIC_DISABLED = "heuristic_disabled"
@@ -174,9 +182,15 @@ class FeatureSchema:
             raise ValueError("feature schema hash does not match its contents")
         object.__setattr__(self, "sha256", digest)
 
-    @property
+    @cached_property
     def names(self) -> tuple[str, ...]:
         return tuple(item.name for item in self.features)
+
+    @cached_property
+    def semantic_indices(self):
+        if 'semantic_similarity' not in self.names or 'semantic_available' not in self.names:
+            return None
+        return self.names.index('semantic_similarity'), self.names.index('semantic_available')
 
 
 @dataclass(frozen=True)
@@ -195,9 +209,9 @@ class FeatureVector:
                 raise ValueError(f"feature {descriptor.name} does not permit missing values")
             if not math.isnan(value) and not math.isfinite(value):
                 raise ValueError(f"feature {descriptor.name} must be finite")
-        if "semantic_similarity" in schema.names and "semantic_available" in schema.names:
-            similarity = self.values[schema.names.index("semantic_similarity")]
-            available = self.values[schema.names.index("semantic_available")]
+        if schema.semantic_indices is not None:
+            similarity = self.values[schema.semantic_indices[0]]
+            available = self.values[schema.semantic_indices[1]]
             if math.isnan(similarity) != (available == 0):
                 raise ValueError("missing semantic similarity requires semantic_available=0")
 
@@ -212,6 +226,8 @@ class RelationshipPrediction:
     semantic_available: bool
     model_package_id: str
     guard_reasons: tuple[str, ...] = ()
+    block_a_id: str | None = None
+    block_b_id: str | None = None
 
     def __post_init__(self) -> None:
         if not 0 <= self.confidence <= 1:

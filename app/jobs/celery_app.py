@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.signals import worker_process_shutdown
 
 from app.core.config import get_settings
 
@@ -20,3 +21,10 @@ celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
 )
+
+
+@worker_process_shutdown.connect
+def close_grouping_runtime(**kwargs):
+    from app.core.runtime import get_extraction_orchestrator
+    if get_extraction_orchestrator.cache_info().currsize:
+        get_extraction_orchestrator().close()

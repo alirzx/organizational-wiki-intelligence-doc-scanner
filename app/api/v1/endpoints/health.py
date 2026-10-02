@@ -19,6 +19,11 @@ async def health():
         "status": "ok",
         "service": settings.app_name,
         "schema_version": settings.schema_version,
+        "grouping": {
+            "enabled": settings.grouping_enabled,
+            "backend": settings.grouping_backend,
+            "requires_trained_model": settings.grouping_backend == "lightgbm",
+        },
         "modules": {
             "ocr": {"backend": settings.ocr_backend, "model_id": settings.ocr_model_id},
             "figure_table": {

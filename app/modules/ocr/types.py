@@ -11,6 +11,8 @@ class OCRLine:
     confidence: float
     bbox: BBox
     polygon: Polygon | None = None
+    column_id: str | None = None
+    block_type: str | None = None
 
 
 @dataclass(frozen=True)

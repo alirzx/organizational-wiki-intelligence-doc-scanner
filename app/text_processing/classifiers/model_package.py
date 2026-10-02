@@ -27,7 +27,8 @@ def write_model_package(
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=f".{destination.name}-", dir=destination.parent))
     try:
-        (temporary / "model.txt").write_text(model_text, encoding="utf-8")
+        # Native tree offsets are byte counts; Windows CRLF translation corrupts them.
+        (temporary / "model.txt").write_text(model_text, encoding="utf-8", newline='\n')
         (temporary / "metrics.json").write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         (temporary / "confusion-matrix.json").write_text(json.dumps(confusion_matrix, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         (temporary / "feature-importance.csv").write_text(feature_importance_csv, encoding="utf-8")

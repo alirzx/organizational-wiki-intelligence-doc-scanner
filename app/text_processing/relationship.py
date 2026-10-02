@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 
 from app.text_processing.types import CandidatePair, RelationshipDecision, RelationshipLabel, RelationshipPrediction
 
@@ -12,6 +13,8 @@ def prediction_from_score(
     semantic_available: bool = False,
     model_package_id: str = "injected",
 ) -> RelationshipPrediction:
+    if not math.isfinite(score) or not 0 <= uncertain_lower <= merge_threshold <= 1:
+        raise ValueError('finite score and ordered thresholds in [0, 1] are required')
     score = min(1.0, max(0.0, score))
     decision = (
         RelationshipDecision.MERGE if score >= merge_threshold
@@ -28,4 +31,6 @@ def prediction_from_score(
         decision=decision,
         semantic_available=semantic_available,
         model_package_id=model_package_id,
+        block_a_id=candidate.block_a_id,
+        block_b_id=candidate.block_b_id,
     )

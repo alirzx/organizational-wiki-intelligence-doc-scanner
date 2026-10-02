@@ -7,9 +7,9 @@ from app.preprocessing.transforms import restore_bbox_to_source, restore_polygon
 from app.preprocessing.types import PreparedPage
 from app.schemas.detection import DetectedObject, ObjectType, Provenance
 from app.schemas.status import ModuleName
-from app.text_processing.ids import stable_block_id
 from app.text_processing.normalizer import TextNormalizer
 from app.text_processing.types import ContentGroup, TextBlock
+from app.text_processing.canonical import canonical_block
 from app.utils.ids import new_object_id
 
 
@@ -22,9 +22,8 @@ def lines_to_text_blocks(
     """Convert OCR lines to stable source-coordinate atomic blocks."""
 
     text_normalizer = normalizer or TextNormalizer()
-    ordered = sorted(lines, key=lambda line: (line.bbox.y1, line.bbox.x1, line.text))
+    ordered = sorted(lines, key=lambda line: (line.bbox.y1, line.bbox.x1, line.bbox.y2, line.bbox.x2, line.text))
     blocks: list[TextBlock] = []
-    seen_ids: set[str] = set()
     for ordinal, line in enumerate(ordered):
         source_bbox = restore_bbox_to_source(
             line.bbox,
@@ -42,44 +41,25 @@ def lines_to_text_blocks(
             if line.polygon
             else None
         )
-        normalized = text_normalizer.normalize(line.text)
-        collision = 0
-        block_id = stable_block_id(
-            document_id=page.document_id,
-            page_id=page.page_id,
-            bbox=source_bbox,
-            content_ordinal=ordinal,
-            text=line.text,
-        )
-        while block_id in seen_ids:
-            collision += 1
-            block_id = stable_block_id(
-                document_id=page.document_id,
-                page_id=page.page_id,
-                bbox=source_bbox,
-                content_ordinal=ordinal,
-                text=line.text,
-                collision=collision,
-            )
-        seen_ids.add(block_id)
-        blocks.append(
-            TextBlock(
-                block_id=block_id,
-                document_id=page.document_id,
-                page_id=page.page_id,
-                page_number=page.page_number,
-                content_ordinal=ordinal,
-                original_text=normalized.original,
-                normalized_text=normalized.normalized,
-                bbox=source_bbox,
-                polygon=source_polygon,
-                ocr_confidence=line.confidence,
-                page_width=page.image_metadata.source_width,
-                page_height=page.image_metadata.source_height,
-                metadata={"normalizer_version": normalized.profile_version},
-            )
-        )
+        blocks.append(canonical_block(
+            document_id=page.document_id, page_id=page.page_id, page_number=page.page_number,
+            ordinal=ordinal, text=line.text, bbox=source_bbox, polygon=source_polygon,
+            confidence=line.confidence, page_width=page.image_metadata.source_width,
+            page_height=page.image_metadata.source_height, normalizer=text_normalizer,
+            column_id=line.column_id, block_type=line.block_type))
     return blocks
+
+
+def objects_to_text_blocks(objects: list[DetectedObject], *, page: PreparedPage) -> list[TextBlock]:
+    """Compatibility adapter for providers without retained line information."""
+    selected = sorted((obj for obj in objects if obj.type == ObjectType.PARAGRAPH),
+                      key=lambda obj: (obj.bbox.y1, obj.bbox.x1, obj.bbox.y2, obj.bbox.x2, obj.raw_text or obj.text or ''))
+    return [canonical_block(document_id=page.document_id, page_id=page.page_id,
+                            page_number=page.page_number, ordinal=i, text=obj.raw_text or obj.text or '',
+                            bbox=obj.bbox, page_width=page.image_metadata.source_width,
+                            page_height=page.image_metadata.source_height, confidence=obj.confidence,
+                            polygon=obj.polygon, column_id=obj.metadata.get('column_id'),
+                            block_type=obj.metadata.get('block_type')) for i, obj in enumerate(selected)]
 
 
 def lines_to_detected_objects(

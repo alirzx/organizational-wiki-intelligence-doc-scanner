@@ -1,10 +1,12 @@
 services:
   api:
-    build:
+    build: &app-build
       context: .
       args:
         INSTALL_MODELS: "true"
-    image: wiki-hami-extraction:0.2.0
+        INSTALL_GROUPING: "true"
+        PYPI_INDEX_URL: ${WIKI_HAMI_PYPI_INDEX_URL:-https://pypi.org/simple}
+    pull_policy: build
     env_file:
       - .env
     environment:
@@ -20,6 +22,7 @@ services:
     volumes:
       - wiki_hami_model_cache:/app/.cache
       - ./data/outputs:/app/data/outputs
+      - ./models/grouping:/app/models/grouping:ro
     shm_size: "2gb"
     restart: unless-stopped
     healthcheck:
@@ -34,7 +37,8 @@ services:
       - "host.docker.internal:host-gateway"
 
   worker:
-    image: wiki-hami-extraction:0.2.0
+    build: *app-build
+    pull_policy: build
     env_file:
       - .env
     environment:
@@ -48,6 +52,7 @@ services:
     volumes:
       - wiki_hami_model_cache:/app/.cache
       - ./data/outputs:/app/data/outputs
+      - ./models/grouping:/app/models/grouping:ro
     shm_size: "2gb"
     restart: unless-stopped
     healthcheck:
@@ -62,7 +67,8 @@ services:
       - "host.docker.internal:host-gateway"
 
   ui:
-    image: wiki-hami-extraction:0.2.0
+    build: *app-build
+    pull_policy: build
     env_file:
       - .env
     environment:

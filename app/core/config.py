@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -62,8 +63,11 @@ class Settings(BaseSettings):
 
     # Document-scoped content-integrity grouping. Disabled by default so existing
     # deployments retain the V1 heuristic paragraph contract until explicitly
-    # enabled with a validated model package.
+    # enabled with a clustering backend or a validated LightGBM package.
     grouping_enabled: bool = False
+    grouping_backend: Literal["lightgbm", "clustering"] = "lightgbm"
+    grouping_cluster_eps: float = Field(default=0.45, gt=0, le=1)
+    grouping_cluster_min_samples: int = Field(default=2, ge=2)
     grouping_model_path: str = "models/grouping/current"
     grouping_merge_threshold: float = Field(default=0.75, ge=0, le=1)
     grouping_uncertain_lower: float = Field(default=0.55, ge=0, le=1)
@@ -71,6 +75,9 @@ class Settings(BaseSettings):
     grouping_candidate_cross_page_window: int = Field(default=3, ge=1)
     grouping_candidate_max_page_distance: int = Field(default=1, ge=0)
     grouping_candidate_max_pairs_per_block: int = Field(default=25, ge=1)
+    grouping_workers: int = Field(default=2, ge=1, le=32)
+    grouping_prediction_batch_size: int = Field(default=2048, ge=1)
+    grouping_inference_threads: int = Field(default=1, ge=1)
 
     semantic_features_enabled: bool = False
     semantic_failure_policy: str = "fallback"  # fallback | fail_fast
@@ -94,6 +101,8 @@ class Settings(BaseSettings):
     embedding_cache_max_entries: int = Field(default=4096, ge=1)
     embedding_prompt_profile: str = "sentence_similarity_v1"
     embedding_max_attempts: int = Field(default=2, ge=1, le=2)
+    embedding_retry_backoff_seconds: float = Field(default=.25, ge=0)
+    embedding_document_deadline_seconds: float = Field(default=60., gt=0)
 
     # Layout localization.
     figure_table_backend: str = "mock"
@@ -131,7 +140,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_grouping_settings(self) -> "Settings":
-        if self.grouping_uncertain_lower > self.grouping_merge_threshold:
+        if self.grouping_uncertain_lower > self.grouping_merge_threshold and (
+            self.grouping_backend == 'clustering' or
+            {'grouping_uncertain_lower','grouping_merge_threshold'} <= self.model_fields_set
+        ):
             raise ValueError(
                 "grouping_uncertain_lower must be <= grouping_merge_threshold"
             )

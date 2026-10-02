@@ -2,9 +2,9 @@ import asyncio
 from time import perf_counter
 
 from app.core.config import Settings
-from app.modules.ocr.adapter import lines_to_detected_objects
+from app.modules.ocr.adapter import lines_to_detected_objects, lines_to_text_blocks, objects_to_text_blocks
 from app.modules.ocr.paddle_backend import PaddleOCRBackend
-from app.modules.ocr.types import OCRLine
+from app.modules.ocr.types import OCRLine, OCRAnalysis
 from app.preprocessing.transforms import restore_bbox_to_source
 from app.preprocessing.types import PreparedPage
 from app.schemas.common import BBox
@@ -51,8 +51,16 @@ class OCRService:
         ]
 
     async def run(self, page: PreparedPage, request_id: str) -> ModulePageResponse:
+        response, _ = await self._run(page,request_id,retain_analysis=False)
+        return response
+
+    async def run_with_analysis(self, page: PreparedPage, request_id: str) -> tuple[ModulePageResponse, OCRAnalysis | None]:
+        return await self._run(page,request_id,retain_analysis=True)
+
+    async def _run(self, page: PreparedPage, request_id: str, *, retain_analysis: bool) -> tuple[ModulePageResponse, OCRAnalysis | None]:
         started = perf_counter()
         backend = self.settings.ocr_backend.lower()
+        lines = []
 
         if backend == "mock":
             objects = self._mock_objects(page)
@@ -77,7 +85,7 @@ class OCRService:
             backend=backend,
             warnings=[] if objects else ["no_text_detected"],
         )
-        return ModulePageResponse(
+        response = ModulePageResponse(
             schema_version=self.settings.schema_version,
             request_id=request_id,
             document_id=page.document_id,
@@ -89,3 +97,9 @@ class OCRService:
             objects=objects,
             status=status,
         )
+        analysis = None
+        if retain_analysis:
+            blocks = (lines_to_text_blocks(lines, page=page) if backend == 'paddle'
+                      else objects_to_text_blocks(objects, page=page))
+            analysis = OCRAnalysis(tuple(lines), tuple(blocks), tuple(objects))
+        return response, analysis

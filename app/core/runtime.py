@@ -70,4 +70,6 @@ def build_grouping_embedder(settings=None) -> OllamaEmbedder | None:
         keep_alive=settings.ollama_embedding_keep_alive,
         max_attempts=settings.embedding_max_attempts,
         cache=RunEmbeddingCache(settings.embedding_cache_max_entries),
+        retry_backoff=settings.embedding_retry_backoff_seconds,
+        document_deadline=settings.embedding_document_deadline_seconds,
     )

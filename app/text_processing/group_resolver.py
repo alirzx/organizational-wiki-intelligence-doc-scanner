@@ -29,6 +29,13 @@ def resolve_groups(
     edge_confidences = edge_confidences or {}
     groups: list[ContentGroup] = []
     ordered_components = sorted(components, key=lambda ids: min(by_id[item].document_order for item in ids))
+    component_for = {item:index for index,ids in enumerate(ordered_components) for item in ids}
+    confidences = defaultdict(list)
+    for edge,value in edge_confidences.items():
+        if isinstance(edge,tuple) and edge[0] in component_for and edge[1] in component_for:
+            index = component_for[edge[0]]
+            if index == component_for[edge[1]]:
+                confidences[index].append(value)
     for group_order, ids in enumerate(ordered_components):
         selected = sorted((by_id[item] for item in ids), key=lambda item: item.document_order)
         members = tuple(
@@ -55,11 +62,7 @@ def resolve_groups(
         group_type = GroupType.LIST_SECTION if MemberRole.LIST_ITEM in roles and MemberRole.HEADING in roles else (
             GroupType.LIST if MemberRole.LIST_ITEM in roles else GroupType.PARAGRAPH
         )
-        selected_ids = {item.block_id for item in selected}
-        applicable = [
-            value for edge, value in edge_confidences.items()
-            if isinstance(edge, tuple) and edge[0] in selected_ids and edge[1] in selected_ids
-        ]
+        applicable = confidences[group_order]
         if not applicable and len(ordered_components) == 1:
             applicable = list(edge_confidences.values())
         confidence = min(applicable) if applicable else (1.0 if len(selected) == 1 else 0.5)

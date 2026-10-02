@@ -6,13 +6,34 @@ Template generation, document linking, semantic/RAG stages, table-cell extractio
 
 ## ML-based Content Integrity Grouping
 
-Document-scoped grouping is an optional additive stage that joins OCR blocks into paragraphs, lists, and heading/list sections, including conservative consecutive-page continuations. It preserves the five existing object types and source-coordinate page geometry. Enable it with `WIKI_HAMI_GROUPING_ENABLED=true` after placing a validated native LightGBM package at `WIKI_HAMI_GROUPING_MODEL_PATH`. The default remains the existing heuristic output.
+Document-scoped grouping is an optional additive stage that joins OCR blocks into paragraphs, lists, and heading/list sections, including conservative consecutive-page continuations. It preserves the five existing object types and source-coordinate page geometry. Enable it with `WIKI_HAMI_GROUPING_ENABLED=true` and select `WIKI_HAMI_GROUPING_BACKEND=clustering` for unsupervised grouping without a model package, or `lightgbm` for a validated trained package at `WIKI_HAMI_GROUPING_MODEL_PATH`. Grouping remains disabled by default.
+
+The clustering backend uses [DBSCAN](https://scikit-learn.org/stable/modules/generated/sklearn.cluster.DBSCAN.html) on a sparse graph of adjacent OCR blocks. Distances combine normalized spacing, alignment, and optional semantic similarity; structural gates protect column, heading, paragraph, and page boundaries. Tune neighborhood distance with `WIKI_HAMI_GROUPING_CLUSTER_EPS` (default `0.45`) and density with `WIKI_HAMI_GROUPING_CLUSTER_MIN_SAMPLES` (default `2`). Noise blocks remain separate. Responses report `grouping.mode=clustered` and a `dbscan.v1` algorithm ID. Confidence represents clustering affinity, not calibrated supervised probability. This backend uses scikit-learn from the grouping dependencies and needs neither LightGBM weights nor Ollama.
 
 Semantic similarity is independently optional. Set `WIKI_HAMI_SEMANTIC_FEATURES_ENABLED=true` and configure `OLLAMA_BASE_URL` plus `OLLAMA_EMBEDDING_MODEL`; `fallback` mode continues without semantics or returns exact heuristic output when the model is unavailable, while `fail_fast` surfaces a sanitized error. Ollama is never required for heuristic deployments.
 
 Before: page-local OCR may split one paragraph or concatenate unrelated list items. After: `content_groups` records stable ordered members and one page-local span per page, `content-groups.json` persists the document view, and learned `OCR.txt` renders every cross-page group once. Limits include OCR-dependent atomic blocks, conservative page-boundary candidates, and model quality tied to representative reviewed annotations.
 
 Commands: build data with `python scripts/build_grouping_dataset.py`, train with `python scripts/train_grouping_model.py`, evaluate with `python scripts/evaluate_grouping_model.py`, export review cases with `python scripts/export_grouping_review.py`, and benchmark with `python scripts/benchmark_grouping.py`.
+
+Grouping now consumes retained OCR lines through canonical normalization and deterministic source-coordinate block IDs. Heuristic paragraph objects remain available when grouping is disabled or falls back. The feature contract is `grouping.features.v2`; packages built with the previous divergent training extractor must be retrained. Threshold precedence is explicitly supplied runtime configuration, package metadata, then application defaults. Grouping runs outside the request event loop with two bounded workers by default; mutable clustering state belongs to one document.
+
+Candidate budgets cap optional work. Eligible adjacent, boundary, local-column, heading/body, and list-continuation candidates are retained even when they exceed that optional cap. Responses add `grouping.candidates` coverage/count diagnostics and populated `grouping.embedding` provider/cache diagnostics. Embeddings are requested only for participating blocks. Retries use configurable backoff and a 60-second document deadline; successful batches remain cached if a later batch fails. A deadline stops waiting without spawning replacement requests while bounded provider work is still in flight.
+
+Install development and grouping dependencies for the complete test suite: `python -m pip install -r requirements-dev.txt -r requirements-grouping.txt`. Run `python -m pytest`. Native training tests use deterministic synthetic fixtures, which do not establish production accuracy.
+
+Run a stage benchmark with `python scripts/benchmark_grouping.py --blocks 1000 --repeats 3`. Add `--backend lightgbm --model-package models/grouping/current` for native inference, `--semantics mock --warm-cache` for controlled cache measurements, or `--semantics ollama` for real provider timings. `--trace-memory` measures Python allocations separately; `--repeats 20` enables p95 reporting. Held-out document evaluation uses `python scripts/evaluate_grouping_model.py input.jsonl output.json --documents`, optionally with `--model-package`. Each document supplies `document_id`, canonical block records, and `expected_groups` containing `member_ids` and `group_type`. This evaluation compares membership partitions, not arbitrary group IDs.
+
+Docker images install the grouping dependencies by default (`INSTALL_GROUPING=true`). API and worker mount `./models/grouping` read-only at `/app/models/grouping`; production Compose uses `${WIKI_HAMI_DATA_ROOT}/models/grouping` instead. Model packages stay outside the image, so they can be deployed without downloading the OCR dependencies again.
+
+To activate the supervised LightGBM backend, select `WIKI_HAMI_GROUPING_BACKEND=lightgbm` and provide reviewed training pairs or an already trained package. With a reviewed JSONL dataset available, train and validate the package before deploying it:
+
+```bash
+python -m pip install -r requirements-grouping.txt
+python scripts/train_grouping_model.py --dataset data/grouping/pairs.jsonl --output-dir models/grouping/current
+```
+
+Set `WIKI_HAMI_GROUPING_ENABLED=true` and `WIKI_HAMI_GROUPING_MODEL_PATH=models/grouping/current` in `.env`, then recreate the services. Verify that the extraction response reports `grouping.mode` as `learned` or `learned_without_semantics` and includes `grouping.model_package_id`. An enabled flag alone does not activate a missing model: `heuristic_fallback` means LightGBM did not run. `WIKI_HAMI_SEMANTIC_FAILURE_POLICY=fail_fast` makes missing or incompatible grouping packages fail the extraction instead of falling back.
 
 ## Production status
 
@@ -263,10 +284,12 @@ Never commit real credentials.
 
 ## Docker / deployment
 
-The application image is shared by API, worker, and optional UI. The Compose project uses the external `wikio` network and a persistent model cache.
+API, worker, and optional UI use the same Dockerfile and build configuration. Compose rebuilds their images on every `docker compose up`, reusing unchanged build layers. The Compose project uses the external `wikio` network and a persistent model cache.
+
+If `files.pythonhosted.org` cannot resolve on your network, set `WIKI_HAMI_PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple` in `.env` to use the [Tsinghua PyPI mirror](https://mirrors.tuna.tsinghua.edu.cn/help/pypi/). The default is `https://pypi.org/simple`. Paddle and CPU Torch wheels still use their official repositories; Torch dependencies use the selected PyPI index. Build-time dependency validation runs `pip check`.
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 docker compose ps
 docker compose logs --tail=100 worker
 ```
