@@ -105,6 +105,29 @@ async def test_document_extract_merges_uploaded_pages():
     assert body["document_id"] == "doc_42"
     assert body["page_count"] == 2
     assert body["processing"]["state"] == "success"
+    assert set(body["pages"][0]["modules"]) == {
+        "ocr",
+        "figure_table",
+        "stamp_signature",
+    }
+
+
+async def test_document_extract_can_select_one_module():
+    async with api_client() as client:
+        response = await client.post(
+            "/api/v1/extract",
+            files=[
+                ("images", ("page-1.png", image_bytes(), "image/png")),
+                ("images", ("page-2.png", image_bytes(), "image/png")),
+            ],
+            data={"document_id": "local_ocr", "module": "ocr"},
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["page_count"] == 2
+    assert all(set(page["modules"]) == {"ocr"} for page in body["pages"])
+    assert {obj["type"] for obj in body["objects"]} == {"paragraph"}
 
 
 async def test_local_upload_can_optionally_publish(monkeypatch):
@@ -126,7 +149,50 @@ async def test_minio_inspection_endpoint_runs_all_three_models(monkeypatch):
     async with api_client() as client:
         response = await client.post("/api/v1/extract/minio/inspect", json=minio_payload("doc_minio"))
     assert response.status_code == 200, response.text
-    assert response.json()["processing"]["state"] == "success"
+    body = response.json()
+    assert body["processing"]["state"] == "success"
+    assert set(body["pages"][0]["modules"]) == {
+        "ocr",
+        "figure_table",
+        "stamp_signature",
+    }
+
+
+async def test_minio_inspection_can_select_one_module(monkeypatch):
+    mock_minio(monkeypatch)
+    payload = minio_payload("doc_minio_figure")
+    payload["pages"].append(
+        {
+            "image_url": (
+                "http://minio.test:9000/media/documents/doc_minio_figure/images/page-002.jpg"
+            ),
+            "page_number": 2,
+            "page_id": "doc_minio_figure:p2",
+        }
+    )
+    async with api_client() as client:
+        response = await client.post(
+            "/api/v1/extract/minio/inspect?module=figure_table",
+            json=payload,
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["page_count"] == 2
+    assert all(set(page["modules"]) == {"figure_table"} for page in body["pages"])
+    assert {obj["type"] for obj in body["objects"]} == {"figure", "table"}
+
+
+async def test_selected_inspection_cannot_publish_full_artifact_set(monkeypatch):
+    mock_minio(monkeypatch)
+    async with api_client() as client:
+        response = await client.post(
+            "/api/v1/extract/minio/inspect?module=ocr&persist_outputs=true",
+            json=minio_payload("inspect_selected_publish"),
+        )
+
+    assert response.status_code == 422
+    assert "all modules" in response.json()["detail"]
 
 
 async def test_minio_inspection_can_publish_in_same_inference_pass(monkeypatch):
@@ -160,6 +226,31 @@ async def test_product_minio_endpoint_returns_202_and_job_id(monkeypatch):
     assert body["job_id"]
     assert queued[0]["task_id"] == body["job_id"]
     assert get_job_store().get(body["job_id"])["status"] == "queued"
+
+
+def test_celery_product_processing_completes_with_explicit_blocking_executor(monkeypatch):
+    mock_minio(monkeypatch)
+    callbacks = []
+    publisher = get_artifact_publisher()
+    monkeypatch.setattr(
+        publisher,
+        "publish",
+        lambda run: [f"documents/{run.response.document_id}/layout.json"],
+    )
+    monkeypatch.setattr(
+        "app.jobs.tasks._deliver_terminal_callback",
+        lambda job_id, document_id, payload: callbacks.append(payload),
+    )
+    job_id = "explicit-executor-job"
+    get_job_store().create(job_id, "celery_runtime")
+
+    result = process_minio_document.run(minio_payload("celery_runtime"), job_id)
+
+    assert result["status"] == "completed"
+    assert result["written"] == ["documents/celery_runtime/layout.json"]
+    assert get_job_store().get(job_id)["status"] == "completed"
+    assert "result" in callbacks[0]
+    assert "outputs" not in callbacks[0]
 
 
 async def test_job_status_endpoint_reports_state(monkeypatch):

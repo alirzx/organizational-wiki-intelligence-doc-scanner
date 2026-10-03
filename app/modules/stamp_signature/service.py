@@ -1,6 +1,6 @@
-import asyncio
 from time import perf_counter
 
+from app.core.blocking import BlockingPool, run_blocking
 from app.core.config import Settings
 from app.modules.stamp_signature.adapter import mark_items_to_detected_objects
 from app.modules.stamp_signature.rfdetr_backend import RFDETRStampSignatureBackend
@@ -62,7 +62,11 @@ class StampSignatureService:
             objects = self._mock_objects(page)
         elif backend == "rfdetr":
             assert self._rfdetr_backend is not None
-            items = await asyncio.to_thread(self._rfdetr_backend.predict, page.processed_image)
+            items = await run_blocking(
+                BlockingPool.STAMP_SIGNATURE,
+                self._rfdetr_backend.predict,
+                page.processed_image,
+            )
             objects = mark_items_to_detected_objects(
                 items,
                 page=page,

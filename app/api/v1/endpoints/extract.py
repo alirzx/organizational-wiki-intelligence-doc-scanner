@@ -1,4 +1,3 @@
-import asyncio
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
@@ -9,6 +8,7 @@ from app.api.v1.request_parsing import (
     prepare_minio_page,
     prepare_uploaded_page,
 )
+from app.core.blocking import BlockingPool, run_blocking
 from app.core.config import get_settings
 from app.core.runtime import (
     get_artifact_publisher,
@@ -19,7 +19,7 @@ from app.core.runtime import (
 from app.jobs.tasks import process_minio_document
 from app.schemas.extraction import DocumentExtractionResponse
 from app.schemas.image import PageDescriptor
-from app.schemas.status import ProcessingState
+from app.schemas.status import ModuleName, ProcessingState
 from app.schemas.storage import ExtractionJobResponse, MinioDocumentRequest
 from app.security import verify_backend_api_key
 from app.storage.minio_service import MinioConfigurationError, MinioStorageError, MinioUrlError
@@ -86,7 +86,7 @@ async def _publish_debug_run(run) -> None:
     if run.response.processing.state != ProcessingState.SUCCESS:
         raise HTTPException(status_code=500, detail=_processing_error(run))
     try:
-        await asyncio.to_thread(publisher.publish, run)
+        await run_blocking(BlockingPool.IO, publisher.publish, run)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except MinioStorageError as exc:
@@ -100,12 +100,18 @@ async def extract_document(
     document_metadata_json: str | None = Form(None),
     pages_metadata_json: str | None = Form(None),
     persist_outputs: bool = Form(False),
+    module: ModuleName | None = Form(None),
 ):
     if not images:
         raise HTTPException(status_code=422, detail="at least one image is required")
     if len(images) > settings.max_pages_per_document:
         raise HTTPException(status_code=422, detail=f"document exceeds max_pages_per_document={settings.max_pages_per_document}")
     request_id = new_request_id()
+    if module is not None and persist_outputs:
+        raise HTTPException(
+            status_code=422,
+            detail="persist_outputs is only supported when all modules run",
+        )
     document_metadata = parse_json_object(document_metadata_json, "document_metadata_json")
     descriptors = parse_page_descriptors(pages_metadata_json, len(images))
     pages = []
@@ -119,7 +125,11 @@ async def extract_document(
         ))
     if not persist_outputs:
         return await orchestrator.extract_document(
-            document_id=document_id, pages=pages, request_id=request_id, document_metadata=document_metadata
+            document_id=document_id,
+            pages=pages,
+            request_id=request_id,
+            document_metadata=document_metadata,
+            selected_modules={module} if module is not None else None,
         )
     run = await orchestrator.extract_document_run(
         document_id=document_id, pages=pages, request_id=request_id, document_metadata=document_metadata
@@ -160,13 +170,23 @@ async def extract_minio_document(payload: MinioDocumentRequest):
     response_model=DocumentExtractionResponse,
     summary="Run full MinIO extraction synchronously for engineering inspection",
 )
-async def inspect_minio_document(payload: MinioDocumentRequest, persist_outputs: bool = Query(False)):
+async def inspect_minio_document(
+    payload: MinioDocumentRequest,
+    persist_outputs: bool = Query(False),
+    module: ModuleName | None = Query(None),
+):
+    if module is not None and persist_outputs:
+        raise HTTPException(
+            status_code=422,
+            detail="persist_outputs is only supported when all modules run",
+        )
     pages = await _prepare_minio_pages(payload)
     run = await orchestrator.extract_document_run(
         document_id=payload.document_id,
         pages=pages,
         request_id=new_request_id(),
         document_metadata=payload.document_metadata,
+        selected_modules={module} if module is not None else None,
     )
     if persist_outputs:
         await _publish_debug_run(run)

@@ -8,7 +8,7 @@ from fastapi import Header, HTTPException
 from app.core.config import get_settings
 
 
-def verify_backend_api_key(
+async def verify_backend_api_key(
     x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
 ) -> None:
     """Authenticate Backend -> AI production calls when a key is configured."""

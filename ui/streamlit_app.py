@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import sys
@@ -17,10 +16,7 @@ import streamlit as st
 from ui.artifacts import build_run_zip, canonical_json_bytes
 from ui.module_runs import (
     ALL_MODULES,
-    MODULE_ENDPOINTS,
     MODULE_LABELS,
-    build_module_document_result,
-    build_module_request,
     success_message,
 )
 from ui.visualizer import annotate_page, legend_html, open_source_image
@@ -126,74 +122,6 @@ def execution_buttons(*, key_prefix: str, disabled: bool) -> str | None:
     return None
 
 
-def run_local_module(
-    module: str,
-    *,
-    document_id: str,
-    document_metadata: dict[str, Any],
-    uploads: list[dict[str, Any]],
-) -> dict[str, Any]:
-    from app.core.config import get_settings
-    from app.core.runtime import (
-        get_figure_table_service,
-        get_ocr_service,
-        get_stamp_signature_service,
-    )
-    from app.preprocessing.pipeline import prepare_page
-    from app.schemas.image import ImageSourceMetadata
-    from app.utils.ids import new_request_id
-
-    settings = get_settings()
-    service = {
-        "ocr": get_ocr_service,
-        "figure_table": get_figure_table_service,
-        "stamp_signature": get_stamp_signature_service,
-    }[module]()
-    pages = [
-        prepare_page(
-            data=item["data"],
-            filename=item["name"],
-            mime_type=item["type"],
-            document_id=document_id,
-            page_id=f"{document_id}:p{index}",
-            page_number=index,
-            page_metadata={"source": "streamlit_upload"},
-            settings=settings,
-            source=ImageSourceMetadata(type="upload"),
-        )
-        for index, item in enumerate(uploads, start=1)
-    ]
-    request_id = new_request_id()
-
-    async def run_pages():
-        return [await service.run(page, request_id) for page in pages]
-
-    responses = asyncio.run(run_pages())
-    page_metadata = {page.page_id: page.page_metadata for page in pages}
-    return build_module_document_result(
-        [response.model_dump(mode="json") for response in responses],
-        document_metadata=document_metadata,
-        page_metadata=page_metadata,
-    )
-
-
-def run_minio_module(
-    module: str,
-    *,
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    responses = [
-        safe_response(api_post(MODULE_ENDPOINTS[module], json=build_module_request(payload["document_id"], page)))
-        for page in payload["pages"]
-    ]
-    page_metadata = {page["page_id"]: page.get("metadata") or {} for page in payload["pages"]}
-    return build_module_document_result(
-        responses,
-        document_metadata=payload["document_metadata"],
-        page_metadata=page_metadata,
-    )
-
-
 with st.sidebar:
     st.title("Wiki Hami")
     st.caption("Extraction V1 · engineering inspector")
@@ -250,47 +178,45 @@ with input_tab:
             disabled=not files or not document_id,
         )
         st.caption(
-            "Run All uses POST /extract. Single-module local runs execute only the selected "
-            "existing service in the Streamlit process and do not persist artifacts."
+            "All choices use POST /extract. Single-module inspection is selected by an "
+            "optional form field and does not persist artifacts."
         )
         if local_choice:
             try:
                 metadata = parse_metadata(document_metadata)
                 uploads = [{"name": item.name, "type": item.type, "data": item.getvalue()} for item in files]
-                if local_choice == "all":
-                    multipart = [
-                        ("images", (item["name"], item["data"], item["type"] or "application/octet-stream"))
-                        for item in uploads
-                    ]
-                    descriptors = [
-                        {
-                            "page_number": index,
-                            "page_id": f"{document_id}:p{index}",
-                            "filename": item["name"],
-                            "metadata": {"source": "streamlit_upload"},
-                        }
-                        for index, item in enumerate(uploads, start=1)
-                    ]
-                    form = {
-                        "document_id": document_id,
-                        "document_metadata_json": json.dumps(metadata, ensure_ascii=False),
-                        "pages_metadata_json": json.dumps(descriptors, ensure_ascii=False),
-                        "persist_outputs": str(persist_outputs).lower(),
+                multipart = [
+                    ("images", (item["name"], item["data"], item["type"] or "application/octet-stream"))
+                    for item in uploads
+                ]
+                descriptors = [
+                    {
+                        "page_number": index,
+                        "page_id": f"{document_id}:p{index}",
+                        "filename": item["name"],
+                        "metadata": {"source": "streamlit_upload"},
                     }
-                    with st.spinner("Running all three extraction modules..."):
-                        result = safe_response(api_post("/extract", files=multipart, data=form))
-                    executed_modules = list(ALL_MODULES)
-                    persisted = persist_outputs
-                else:
-                    with st.spinner(f"Running {MODULE_LABELS[local_choice]} only..."):
-                        result = run_local_module(
-                            local_choice,
-                            document_id=document_id,
-                            document_metadata=metadata,
-                            uploads=uploads,
-                        )
-                    executed_modules = [local_choice]
-                    persisted = False
+                    for index, item in enumerate(uploads, start=1)
+                ]
+                selected_module = None if local_choice == "all" else local_choice
+                persisted = persist_outputs if selected_module is None else False
+                form = {
+                    "document_id": document_id,
+                    "document_metadata_json": json.dumps(metadata, ensure_ascii=False),
+                    "pages_metadata_json": json.dumps(descriptors, ensure_ascii=False),
+                    "persist_outputs": str(persisted).lower(),
+                }
+                if selected_module is not None:
+                    form["module"] = selected_module
+                spinner = (
+                    "Running all three extraction modules..."
+                    if selected_module is None
+                    else f"Running {MODULE_LABELS[selected_module]} only..."
+                )
+                with st.spinner(spinner):
+                    result = safe_response(api_post("/extract", files=multipart, data=form))
+                executed_modules = list(ALL_MODULES) if selected_module is None else [selected_module]
+                if selected_module is not None:
                     if persist_outputs:
                         st.warning(
                             "Artifact persistence remains available only for Run All Modules; "
@@ -358,8 +284,8 @@ with input_tab:
             disabled=not selected or not document_id,
         )
         st.caption(
-            "Run All uses /extract/minio/inspect. Single-module runs call the existing "
-            "per-page module endpoint and do not persist artifacts."
+            "All choices use one /extract/minio/inspect document request. Single-module "
+            "inspection uses an optional query parameter and does not persist artifacts."
         )
         product_clicked = st.button(
             "Submit production async job",
@@ -370,20 +296,24 @@ with input_tab:
         if minio_choice:
             try:
                 payload = build_minio_payload(document_id, document_metadata, selected)
-                if minio_choice == "all":
-                    with st.spinner("Running all three modules synchronously..."):
-                        result = safe_response(api_post(
-                            "/extract/minio/inspect",
-                            params={"persist_outputs": str(persist_outputs).lower()},
-                            json=payload,
-                        ))
-                    executed_modules = list(ALL_MODULES)
-                    persisted = persist_outputs
-                else:
-                    with st.spinner(f"Running {MODULE_LABELS[minio_choice]} only..."):
-                        result = run_minio_module(minio_choice, payload=payload)
-                    executed_modules = [minio_choice]
-                    persisted = False
+                selected_module = None if minio_choice == "all" else minio_choice
+                persisted = persist_outputs if selected_module is None else False
+                params = {"persist_outputs": str(persisted).lower()}
+                if selected_module is not None:
+                    params["module"] = selected_module
+                spinner = (
+                    "Running all three modules synchronously..."
+                    if selected_module is None
+                    else f"Running {MODULE_LABELS[selected_module]} only..."
+                )
+                with st.spinner(spinner):
+                    result = safe_response(api_post(
+                        "/extract/minio/inspect",
+                        params=params,
+                        json=payload,
+                    ))
+                executed_modules = list(ALL_MODULES) if selected_module is None else [selected_module]
+                if selected_module is not None:
                     if persist_outputs:
                         st.warning(
                             "Artifact persistence remains available only for Run All Modules; "

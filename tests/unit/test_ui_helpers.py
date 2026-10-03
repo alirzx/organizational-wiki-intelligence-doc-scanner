@@ -7,7 +7,7 @@ from PIL import Image
 from streamlit.testing.v1 import AppTest
 
 from ui.artifacts import build_run_zip, canonical_json_bytes
-from ui.module_runs import build_module_document_result, build_module_request, success_message
+from ui.module_runs import success_message
 from ui.visualizer import CLASS_COLORS, annotate_page
 
 
@@ -62,99 +62,21 @@ def test_json_and_multi_page_zip_exports_preserve_complete_result():
         assert [page["page_id"] for page in manifest["pages"]] == ["DOC/100:p1", "DOC/100:p2"]
 
 
-def _module_page(page_number: int, *, state: str = "success"):
-    page_id = f"doc:p{page_number}"
-    return {
-        "schema_version": "wiki-hami.extraction.v1",
-        "request_id": "request-1",
-        "document_id": "doc",
-        "page_id": page_id,
-        "page_number": page_number,
-        "module": "ocr",
-        "image": {
-            "filename": f"page-{page_number}.png",
-            "source_width": 100,
-            "source_height": 100,
-            "processed_width": 100,
-            "processed_height": 100,
-        },
-        "transform": {"scale_x": 1, "scale_y": 1},
-        "objects": [
-            {
-                "page_number": page_number,
-                "type": "paragraph",
-                "bbox": {"x1": 1, "y1": 2, "x2": 10, "y2": 12},
-            }
-        ],
-        "status": {
-            "module": "ocr",
-            "state": state,
-            "duration_ms": page_number * 10,
-            "backend": "mock",
-            "warnings": [] if state == "success" else ["page_failed"],
-            "error": None,
-        },
-    }
-
-
-def test_module_responses_become_multi_page_document_shaped_ui_result():
-    result = build_module_document_result(
-        [_module_page(2), _module_page(1)],
-        document_metadata={"source": "inspection"},
-        page_metadata={"doc:p1": {"name": "one"}, "doc:p2": {"name": "two"}},
-    )
-
-    assert [page["page_number"] for page in result["pages"]] == [1, 2]
-    assert all(set(page["modules"]) == {"ocr"} for page in result["pages"])
-    assert result["pages"][0]["page_metadata"] == {"name": "one"}
-    assert result["page_count"] == 2
-    assert result["object_counts"] == {
-        "paragraph": 2,
-        "table": 0,
-        "figure": 0,
-        "stamp": 0,
-        "signature": 0,
-    }
-    assert result["processing"] == {
-        "state": "success",
-        "duration_ms": 30.0,
-        "warnings": [],
-    }
-
-
-def test_module_ui_result_reports_partial_pages_without_claiming_all_modules_ran():
-    result = build_module_document_result(
-        [_module_page(1), _module_page(2, state="failed")],
-        document_metadata={},
-    )
-
-    assert result["processing"]["state"] == "partial_success"
+def test_single_module_success_does_not_claim_all_modules_ran():
     assert success_message(["ocr"], persisted=False) == "OCR succeeded on all pages."
     assert success_message(["ocr"], persisted=False) != "All modules succeeded."
 
 
-def test_minio_page_descriptor_maps_to_existing_module_request_contract():
-    request = build_module_request(
-        "doc",
-        {
-            "image_url": "http://minio/media/documents/doc/images/page.png",
-            "page_number": 2,
-            "page_id": "doc:p2",
-            "metadata": {"minio_object_key": "documents/doc/images/page.png"},
-        },
-    )
-
-    assert request == {
-        "document_id": "doc",
-        "image_url": "http://minio/media/documents/doc/images/page.png",
-        "page_number": 2,
-        "page_id": "doc:p2",
-        "page_metadata": {"minio_object_key": "documents/doc/images/page.png"},
-    }
-
-
 def test_streamlit_app_initial_view_renders_without_exceptions():
     app_path = Path(__file__).resolve().parents[2] / "ui/streamlit_app.py"
+    source = app_path.read_text(encoding="utf-8")
+    assert "asyncio.run" not in source
+    assert "get_ocr_service" not in source
+    assert "get_figure_table_service" not in source
+    assert "get_stamp_signature_service" not in source
+    assert 'api_post("/extract"' in source
+    assert '"/extract/minio/inspect"' in source
+
     app = AppTest.from_file(str(app_path)).run(timeout=10)
     assert not app.exception
     assert app.title[0].value == "Document Extraction Inspector"

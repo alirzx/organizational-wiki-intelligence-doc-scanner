@@ -1,6 +1,6 @@
-import asyncio
 from time import perf_counter
 
+from app.core.blocking import BlockingPool, run_blocking
 from app.core.config import Settings
 from app.modules.ocr.adapter import lines_to_detected_objects
 from app.modules.ocr.backend import MockOCRBackend, create_ocr_backend
@@ -54,7 +54,11 @@ class OCRService:
         if isinstance(self._backend, MockOCRBackend):
             objects = self._mock_objects(page)
         else:
-            lines = await asyncio.to_thread(self._backend.predict, page.processed_image)
+            lines = await run_blocking(
+                BlockingPool.OCR,
+                self._backend.predict,
+                page.processed_image,
+            )
             objects = lines_to_detected_objects(
                 lines,
                 page=page,

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import asyncio
-
 from app.api.v1.request_parsing import prepare_minio_page
+from app.core.blocking import BlockingPool, run_blocking
 from app.core.config import get_settings
 from app.core.runtime import get_artifact_publisher, get_extraction_orchestrator, get_minio_storage_service
 from app.schemas.image import PageDescriptor
@@ -52,4 +51,4 @@ async def process_minio_payload(payload: MinioDocumentRequest) -> list[str]:
     )
     if run.response.processing.state != ProcessingState.SUCCESS:
         raise RuntimeError(_processing_error(run))
-    return await asyncio.to_thread(get_artifact_publisher().publish, run)
+    return await run_blocking(BlockingPool.IO, get_artifact_publisher().publish, run)

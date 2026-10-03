@@ -267,10 +267,10 @@ async def test_bina_service_status_uses_selected_backend_metadata(monkeypatch, t
     )
     service = OCRService(_settings())
 
-    async def predict_inline(func, *args):
+    async def predict_inline(pool, func, *args):
         return func(*args)
 
-    monkeypatch.setattr("app.modules.ocr.service.asyncio.to_thread", predict_inline)
+    monkeypatch.setattr("app.modules.ocr.service.run_blocking", predict_inline)
     response = await service.run(_prepared_page(), "request-1")
 
     assert response.status.backend == "bina_rizeh"

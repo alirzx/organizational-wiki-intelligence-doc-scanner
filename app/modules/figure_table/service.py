@@ -1,6 +1,6 @@
-import asyncio
 from time import perf_counter
 
+from app.core.blocking import BlockingPool, run_blocking
 from app.core.config import Settings
 from app.modules.figure_table.adapter import layout_items_to_detected_objects
 from app.modules.figure_table.pp_doclayout_backend import PPDocLayoutBackend
@@ -62,7 +62,11 @@ class FigureTableService:
             objects = self._mock_objects(page)
         elif backend == "pp_doclayout":
             assert self._pp_backend is not None
-            items = await asyncio.to_thread(self._pp_backend.predict, page.processed_image)
+            items = await run_blocking(
+                BlockingPool.FIGURE_TABLE,
+                self._pp_backend.predict,
+                page.processed_image,
+            )
             objects = layout_items_to_detected_objects(
                 items,
                 page=page,

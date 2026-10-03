@@ -1,5 +1,6 @@
 from io import BytesIO
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 from PIL import Image
@@ -7,6 +8,7 @@ from PIL import Image
 from app.core.config import Settings
 from app.orchestration.extractor import ExtractionOrchestrator
 from app.preprocessing.pipeline import prepare_page
+from app.schemas.status import ModuleName
 
 
 class FailingStampService:
@@ -94,3 +96,56 @@ def test_module_endpoints_and_orchestrator_share_process_local_services():
     assert orchestrator.ocr is get_ocr_service()
     assert orchestrator.figure_table is get_figure_table_service()
     assert orchestrator.stamp_signature is get_stamp_signature_service()
+
+
+@pytest.mark.asyncio
+async def test_default_orchestrator_execution_runs_all_modules():
+    settings = Settings(
+        ocr_backend="mock",
+        figure_table_backend="mock",
+        stamp_signature_backend="mock",
+    )
+    orchestrator = ExtractionOrchestrator(settings)
+    services = [orchestrator.ocr, orchestrator.figure_table, orchestrator.stamp_signature]
+    for service in services:
+        service.run = AsyncMock(wraps=service.run)
+
+    response = await orchestrator.extract_document(
+        document_id="doc_partial",
+        pages=[_page(settings)],
+        request_id="req_all",
+        document_metadata={},
+    )
+
+    assert set(response.pages[0].modules) == set(ModuleName)
+    assert all(service.run.await_count == 1 for service in services)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selected_module", list(ModuleName))
+async def test_orchestrator_executes_only_selected_module(selected_module):
+    settings = Settings(
+        ocr_backend="mock",
+        figure_table_backend="mock",
+        stamp_signature_backend="mock",
+    )
+    orchestrator = ExtractionOrchestrator(settings)
+    services = {
+        ModuleName.OCR: orchestrator.ocr,
+        ModuleName.FIGURE_TABLE: orchestrator.figure_table,
+        ModuleName.STAMP_SIGNATURE: orchestrator.stamp_signature,
+    }
+    for service in services.values():
+        service.run = AsyncMock(wraps=service.run)
+
+    response = await orchestrator.extract_document(
+        document_id="doc_partial",
+        pages=[_page(settings)],
+        request_id=f"req_{selected_module.value}",
+        document_metadata={},
+        selected_modules={selected_module},
+    )
+
+    assert set(response.pages[0].modules) == {selected_module}
+    for module, service in services.items():
+        assert service.run.await_count == (1 if module == selected_module else 0)

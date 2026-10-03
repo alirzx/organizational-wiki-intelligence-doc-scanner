@@ -1,5 +1,6 @@
 import asyncio
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass
 from time import perf_counter
 
@@ -27,6 +28,12 @@ class DocumentRunResult:
 
 
 class ExtractionOrchestrator:
+    _MODULE_ORDER = (
+        ModuleName.OCR,
+        ModuleName.FIGURE_TABLE,
+        ModuleName.STAMP_SIGNATURE,
+    )
+
     def __init__(
         self,
         settings: Settings,
@@ -62,13 +69,18 @@ class ExtractionOrchestrator:
         page: PreparedPage,
         request_id: str,
         page_semaphore: asyncio.Semaphore,
+        selected_modules: tuple[ModuleName, ...],
     ) -> PageRunResult:
         async with page_semaphore:
             started = perf_counter()
+            services = {
+                ModuleName.OCR: self.ocr,
+                ModuleName.FIGURE_TABLE: self.figure_table,
+                ModuleName.STAMP_SIGNATURE: self.stamp_signature,
+            }
             jobs = [
-                (ModuleName.OCR, self.ocr.run(page, request_id)),
-                (ModuleName.FIGURE_TABLE, self.figure_table.run(page, request_id)),
-                (ModuleName.STAMP_SIGNATURE, self.stamp_signature.run(page, request_id)),
+                (module, services[module].run(page, request_id))
+                for module in selected_modules
             ]
             raw_results = await asyncio.gather(
                 *(
@@ -126,8 +138,13 @@ class ExtractionOrchestrator:
         pages: list[PreparedPage],
         request_id: str,
         document_metadata: dict,
+        selected_modules: Collection[ModuleName] | None = None,
     ) -> DocumentRunResult:
         started = perf_counter()
+        selected = set(selected_modules) if selected_modules is not None else set(self._MODULE_ORDER)
+        ordered_modules = tuple(module for module in self._MODULE_ORDER if module in selected)
+        if not ordered_modules:
+            raise ValueError("at least one extraction module must be selected")
         # asyncio synchronization primitives are bound to the event loop that
         # first waits on them. Celery executes each task through asyncio.run(),
         # so a cached orchestrator may be reused across multiple event loops.
@@ -135,7 +152,10 @@ class ExtractionOrchestrator:
         # process-local orchestrator instance.
         page_semaphore = asyncio.Semaphore(self.settings.page_concurrency)
         page_runs = await asyncio.gather(
-            *(self._run_page(page, request_id, page_semaphore) for page in pages)
+            *(
+                self._run_page(page, request_id, page_semaphore, ordered_modules)
+                for page in pages
+            )
         )
         page_runs = sorted(page_runs, key=lambda item: item.response.page_number)
         page_results = [item.response for item in page_runs]
@@ -185,6 +205,7 @@ class ExtractionOrchestrator:
         pages: list[PreparedPage],
         request_id: str,
         document_metadata: dict,
+        selected_modules: Collection[ModuleName] | None = None,
     ) -> DocumentExtractionResponse:
         """Backward-compatible merged extraction response used by local/dev callers."""
         run = await self.extract_document_run(
@@ -192,5 +213,6 @@ class ExtractionOrchestrator:
             pages=pages,
             request_id=request_id,
             document_metadata=document_metadata,
+            selected_modules=selected_modules,
         )
         return run.response

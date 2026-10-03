@@ -1,7 +1,6 @@
-import asyncio
-
 from fastapi import APIRouter, HTTPException, Query, Response
 
+from app.core.blocking import BlockingPool, run_blocking
 from app.core.config import get_settings
 from app.core.runtime import get_minio_storage_service
 from app.schemas.storage import MinioHealthResponse, MinioObjectListResponse
@@ -49,7 +48,7 @@ async def minio_health():
             browser_enabled=settings.minio_browser_enabled,
         )
     try:
-        connected = await asyncio.to_thread(storage.check_connection)
+        connected = await run_blocking(BlockingPool.IO, storage.check_connection)
     except MinioStorageError as exc:
         raise _storage_http_error(exc) from exc
     if not connected:
@@ -80,7 +79,8 @@ async def list_minio_objects(
 ):
     _require_browser()
     try:
-        objects, truncated = await asyncio.to_thread(
+        objects, truncated = await run_blocking(
+            BlockingPool.IO,
             storage.list_objects,
             prefix=prefix,
             limit=limit,
@@ -109,7 +109,7 @@ async def get_minio_object(
 ):
     _require_browser()
     try:
-        obj = await asyncio.to_thread(storage.fetch_object, object_key)
+        obj = await run_blocking(BlockingPool.IO, storage.fetch_object, object_key)
     except MinioStorageError as exc:
         raise _storage_http_error(exc) from exc
     headers = {}

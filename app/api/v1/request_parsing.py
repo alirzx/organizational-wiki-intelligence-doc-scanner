@@ -1,9 +1,9 @@
-import asyncio
 import json
 from typing import Any
 
 from fastapi import HTTPException, UploadFile
 
+from app.core.blocking import BlockingPool, run_blocking
 from app.core.config import Settings
 from app.preprocessing.pipeline import prepare_page
 from app.preprocessing.validator import ImageValidationError
@@ -116,7 +116,7 @@ async def prepare_minio_page(
     storage: MinioStorageService,
 ):
     try:
-        obj = await asyncio.to_thread(storage.fetch_url, image_url)
+        obj = await run_blocking(BlockingPool.IO, storage.fetch_url, image_url)
     except MinioUrlError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except MinioObjectNotFound as exc:
