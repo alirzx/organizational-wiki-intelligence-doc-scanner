@@ -1,0 +1,1 @@
+paddlepaddle-gpu==3.2.2

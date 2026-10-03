@@ -9,6 +9,7 @@ import numpy as np
 from PIL import Image
 
 from app.core.config import Settings
+from app.core.devices import require_paddle_device
 from app.modules.figure_table.types import LayoutDetectionItem
 from app.schemas.common import BBox, Point, Polygon
 
@@ -58,12 +59,14 @@ class PPDocLayoutBackend:
             if self._model is not None:
                 return self._model
             try:
+                import paddle
                 from paddleocr import LayoutDetection
             except ImportError as exc:  # pragma: no cover
                 raise RuntimeError(
                     "PP-DocLayout backend requested but PaddleOCR is not installed. "
                     "Install requirements-models.txt or use WIKI_HAMI_FIGURE_TABLE_BACKEND=mock."
                 ) from exc
+            require_paddle_device(self.settings.figure_table_device, paddle)
             self._model = LayoutDetection(
                 model_name=self.settings.figure_table_model_id.split("/")[-1],
                 device=self.settings.figure_table_device,

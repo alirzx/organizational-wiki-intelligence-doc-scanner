@@ -16,6 +16,7 @@ import numpy as np
 from PIL import Image
 
 from app.core.config import Settings
+from app.core.devices import require_torch_device
 from app.modules.stamp_signature.types import MarkDetection
 from app.schemas.common import BBox
 
@@ -51,6 +52,7 @@ class RFDETRStampSignatureBackend:
                     "Install requirements-models.txt or use WIKI_HAMI_STAMP_SIGNATURE_BACKEND=mock."
                 ) from exc
 
+            require_torch_device(self.settings.stamp_signature_device, torch)
             checkpoint = hf_hub_download(
                 repo_id=self.settings.stamp_signature_model_id,
                 filename=self.settings.stamp_signature_checkpoint_filename,

@@ -6,6 +6,11 @@ from app.modules.ocr.paddle_backend import PaddleOCRBackend
 
 
 def _install_fake_paddleocr(monkeypatch, captured: dict):
+    paddle = types.ModuleType("paddle")
+    paddle.is_compiled_with_cuda = lambda: False
+    paddle.device = types.SimpleNamespace(cuda=types.SimpleNamespace(device_count=lambda: 0))
+    monkeypatch.setitem(sys.modules, "paddle", paddle)
+
     module = types.ModuleType("paddleocr")
 
     class FakePaddleOCR:
@@ -20,7 +25,7 @@ def test_paddle_backend_disables_mkldnn_by_default(monkeypatch):
     captured: dict = {}
     _install_fake_paddleocr(monkeypatch, captured)
 
-    settings = Settings(_env_file=None, ocr_backend="paddle")
+    settings = Settings(_env_file=None, ocr_backend="paddle", ocr_device="cpu")
     backend = PaddleOCRBackend(settings)
     backend._load()
 
@@ -36,6 +41,7 @@ def test_paddle_backend_allows_explicit_mkldnn_enable(monkeypatch):
     settings = Settings(
         _env_file=None,
         ocr_backend="paddle",
+        ocr_device="cpu",
         ocr_enable_mkldnn=True,
     )
     backend = PaddleOCRBackend(settings)

@@ -15,6 +15,13 @@ services:
       - ${WIKI_HAMI_DATA_ROOT:-/var/lib/wiki-hami}/cache:/var/lib/wiki-hami/cache
       - ${WIKI_HAMI_DATA_ROOT:-/var/lib/wiki-hami}/outputs:/app/data/outputs
     shm_size: "2gb"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/v1/health"]
@@ -39,6 +46,13 @@ services:
       - ${WIKI_HAMI_DATA_ROOT:-/var/lib/wiki-hami}/cache:/var/lib/wiki-hami/cache
       - ${WIKI_HAMI_DATA_ROOT:-/var/lib/wiki-hami}/outputs:/app/data/outputs
     shm_size: "2gb"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.jobs.celery_app:celery_app inspect ping -d celery@$$HOSTNAME --timeout=5 2>/dev/null | grep -q pong"]

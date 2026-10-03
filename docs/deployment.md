@@ -10,7 +10,7 @@ Backend
    v
 Wiki Hami API ----> Redis ----> Wiki Hami worker
    |                              |
-   |                              +--> CPU models
+   |                              +--> extraction models
    |                              +--> MinIO writes
    |                              +--> Backend callback
    |
@@ -37,36 +37,50 @@ Start from `.env.example` and keep production secrets out of Git.
 
 ```env
 WIKI_HAMI_OCR_BACKEND=paddle
-WIKI_HAMI_OCR_DEVICE=cpu
+WIKI_HAMI_OCR_DEVICE=gpu:0
 WIKI_HAMI_OCR_ENABLE_MKLDNN=false
 WIKI_HAMI_FIGURE_TABLE_BACKEND=pp_doclayout
-WIKI_HAMI_FIGURE_TABLE_DEVICE=cpu
+WIKI_HAMI_FIGURE_TABLE_DEVICE=gpu:0
 WIKI_HAMI_STAMP_SIGNATURE_BACKEND=rfdetr
-WIKI_HAMI_STAMP_SIGNATURE_DEVICE=cpu
+WIKI_HAMI_STAMP_SIGNATURE_DEVICE=cuda:0
 ```
 
-For Persian-focused Bina Rizeh full-page OCR, keep the same CPU image and cache
-volume, then select the pinned release:
+For Persian-focused Bina Rizeh full-page OCR, select the pinned detector and
+line recognizer:
 
 ```dotenv
 WIKI_HAMI_OCR_BACKEND=bina_rizeh
-WIKI_HAMI_OCR_DEVICE=cpu
-WIKI_HAMI_OCR_BINA_MODEL_ID=Reza2kn/Bina-0.2-Rizeh
-WIKI_HAMI_OCR_BINA_REVISION=4e8cf8806c08442276dcb5ed4a112329945a9bbe
+WIKI_HAMI_OCR_DEVICE=gpu:0
+WIKI_HAMI_OCR_BINA_MODEL_ID=Reza2kn/Bina-0.2-RizehPizeh
+WIKI_HAMI_OCR_BINA_REVISION=993527413ff74ef6d446df91c715a4e0825abe5b
 WIKI_HAMI_OCR_BINA_SCORE_THRESHOLD=0.0
+WIKI_HAMI_OCR_BINA_BATCH_SIZE=1
+WIKI_HAMI_OCR_DETECTION_MODEL_ID=PaddlePaddle/PP-OCRv6_medium_det
+WIKI_HAMI_OCR_DETECTION_MODEL_REVISION=8e0f56fb2ef86b461d99cfc7ac5c137738985f61
 ```
 
-The Bina backend lazily downloads only its bundled `inference/` and `detector/`
-directories to `HF_HOME`, then reuses its in-process PaddleOCR instance. Roll
+The Bina backend lazily downloads only three inference artifacts for each pinned
+repository to `HF_HOME`, then reuses independent detector and recognizer objects.
+It rectifies detected lines before recognition and retains both logical and raw
+text. Roll
 back by setting `WIKI_HAMI_OCR_BACKEND=paddle`; no API, queue, or artifact
 configuration changes are required.
 
-The pinned CPU OCR runtime baseline is PaddlePaddle 3.2.2 + PaddleOCR 3.7.0 + PaddleX 3.7.2. oneDNN/MKLDNN is disabled by default for OCR stability unless the exact target runtime has been regression-tested.
+The pinned OCR runtime baseline is PaddlePaddle 3.2.2 + PaddleOCR 3.7.0 + PaddleX 3.7.2. oneDNN/MKLDNN is disabled by default for OCR stability unless the exact target runtime has been regression-tested.
 
-This image is CPU-oriented. Bina's upstream wrapper accepts `gpu:0`, but a CPU
-PaddlePaddle wheel cannot use it. A GPU deployment remains unverified here until
-the target CUDA/PaddlePaddle wheel is selected and GPU devices are exposed to both
-the API process (engineering OCR endpoint) and the Celery worker.
+The Docker build defaults to the GPU profile but requires explicit
+`WIKI_HAMI_PADDLE_GPU_INDEX_URL` and `WIKI_HAMI_TORCH_GPU_INDEX_URL` values chosen
+from official package indexes for the deployment's verified CUDA runtime. Compose
+reserves an NVIDIA GPU for both API and worker. Startup/inference fails clearly
+when a GPU device is configured with CPU-only packages or no visible GPU; there
+is no silent CPU fallback. GPU execution remains unverified for this deployment.
+
+For a CPU installation/build, set all model devices to `cpu` and use:
+
+```bash
+WIKI_HAMI_MODEL_RUNTIME=cpu docker compose \
+  -f compose.yaml -f compose.cpu.yaml build api
+```
 
 ### Workload limits
 
@@ -123,6 +137,9 @@ Use the actual Docker DNS alias visible from the AI worker. Do not assume a Comp
 Root `compose.yaml` defines API, worker, and UI on external network `wikio` with shared persistent model cache.
 
 ```bash
+WIKI_HAMI_MODEL_RUNTIME=cpu docker compose \
+  -f compose.yaml -f compose.cpu.yaml up -d --build  # CPU profile
+# or configure verified GPU indexes in .env, then:
 docker compose up -d --build
 docker compose ps
 ```

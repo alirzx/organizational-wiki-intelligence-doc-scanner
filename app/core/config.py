@@ -55,25 +55,27 @@ class Settings(BaseSettings):
     ocr_backend: str = "mock"
     ocr_model_id: str = "PaddlePaddle/arabic_PP-OCRv5_mobile_rec"
     ocr_text_detection_model_name: str = "PP-OCRv5_server_det"
-    ocr_device: str = "cpu"
+    ocr_device: str = "gpu:0"
     # Stability-first CPU baseline. PaddleOCR/PaddleX enable oneDNN/MKLDNN by
     # default; keep it disabled unless a target runtime has been regression-tested.
     ocr_enable_mkldnn: bool = False
     ocr_score_threshold: float = 0.45
     ocr_use_textline_orientation: bool = True
-    # Bina ships a full-page pipeline: its Persian recognizer plus a bundled,
-    # pinned PP-OCRv6 detector. Its score is passed to Bina/PaddleOCR directly
-    # and is not calibrated to the Paddle fallback threshold above.
-    ocr_bina_model_id: str = "Reza2kn/Bina-0.2-Rizeh"
-    ocr_bina_revision: str = "4e8cf8806c08442276dcb5ed4a112329945a9bbe"
+    # Bina is a line recognizer. The full-page backend pairs it with a separately
+    # pinned detector and applies the official visual-to-logical text transform.
+    ocr_bina_model_id: str = "Reza2kn/Bina-0.2-RizehPizeh"
+    ocr_bina_revision: str = "993527413ff74ef6d446df91c715a4e0825abe5b"
     ocr_bina_score_threshold: float = 0.0
+    ocr_bina_batch_size: int = 1
+    ocr_detection_model_id: str = "PaddlePaddle/PP-OCRv6_medium_det"
+    ocr_detection_model_revision: str = "8e0f56fb2ef86b461d99cfc7ac5c137738985f61"
     ocr_paragraph_max_gap_ratio: float = 1.8
     ocr_paragraph_min_x_overlap: float = 0.15
 
     # Layout localization.
     figure_table_backend: str = "mock"
     figure_table_model_id: str = "PaddlePaddle/PP-DocLayoutV3"
-    figure_table_device: str = "cpu"
+    figure_table_device: str = "gpu:0"
     figure_table_score_threshold: float = 0.45
     figure_labels: str = "figure,image,chart"
     table_labels: str = "table"
@@ -83,7 +85,7 @@ class Settings(BaseSettings):
     stamp_signature_model_id: str = "bluecopa/rf-detr-stamp-signature-detector"
     stamp_signature_checkpoint_filename: str = "checkpoint_best_ema.pth"
     stamp_signature_model_revision: str = "c59fd4f451b254501700a56c7769f1a3d788c753"
-    stamp_signature_device: str = "cpu"
+    stamp_signature_device: str = "cuda:0"
     stamp_signature_score_threshold: float = 0.50
     stamp_signature_cache_dir: str | None = None
 

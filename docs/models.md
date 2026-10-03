@@ -8,15 +8,17 @@ This document describes the production model/runtime contract for Extraction V1.
 |---|---|---|---:|---|
 | OCR | `mock` | deterministic test line | — | `paragraph` |
 | OCR | `paddle` | `PP-OCRv5_server_det` + `PaddlePaddle/arabic_PP-OCRv5_mobile_rec` | 0.45 | `paragraph` |
-| OCR | `bina_rizeh` | `Reza2kn/Bina-0.2-Rizeh` + bundled `PaddlePaddle/PP-OCRv6_medium_det` | 0.0 | `paragraph` |
+| OCR | `bina_rizeh` | independent `PaddlePaddle/PP-OCRv6_medium_det` + `Reza2kn/Bina-0.2-RizehPizeh` | 0.0 | `paragraph` |
 | Figure/Table | `pp_doclayout` | `PaddlePaddle/PP-DocLayoutV3` | 0.45 | `figure`, `table` |
 | Stamp/Signature | `rfdetr` | `bluecopa/rf-detr-stamp-signature-detector` | 0.50 | `stamp`, `signature` |
 
-Production is currently CPU-oriented. The `.env.example` defaults to mock backends so development/tests can run without loading model frameworks.
+Model devices default to `gpu:0` for Paddle modules and `cuda:0` for RF-DETR.
+The `.env.example` still defaults to mock backends so development/tests remain
+model-free. Set all three device settings to `cpu` for the portable CPU profile.
 
 ## Pinned OCR runtime baseline
 
-The production CPU OCR stack is intentionally pinned rather than allowed to float between rebuilds:
+The OCR stack is intentionally pinned rather than allowed to float between rebuilds:
 
 ```text
 paddlepaddle 3.2.2
@@ -24,7 +26,10 @@ paddleocr    3.7.0
 paddlex      3.7.2
 ```
 
-`requirements-paddle-cpu.txt` owns the PaddlePaddle pin and `requirements-models.txt` owns the PaddleOCR/PaddleX pins. Docker and `make install-models` install from these files so local and container builds use the same compatibility baseline.
+CPU and GPU framework pins live in separate requirements files. GPU installation
+also requires operator-provided official Paddle and PyTorch indexes selected for
+the verified target CUDA runtime; this repository does not invent that choice.
+`requirements-models.txt` owns the shared PaddleOCR/PaddleX pins.
 
 For CPU stability, Wiki Hami explicitly passes:
 
@@ -38,7 +43,9 @@ to `PaddleOCR` by default through `WIKI_HAMI_OCR_ENABLE_MKLDNN=false`. PaddleOCR
 
 Heavy model objects are loaded lazily on first inference and cached inside the process. Each real backend uses initialization/prediction locking around its shared model instance.
 
-In production, model inference runs in the Celery worker. Current worker concurrency is `1`, avoiding uncontrolled duplication/parallel use of memory-heavy process-local model sets.
+Async production inference runs in the Celery worker. Synchronous engineering
+endpoints can also infer in the API process, which is why both roles receive the
+same model image, cache, and GPU reservation. Current worker concurrency is `1`.
 
 ```text
 fresh persistent cache + first inference
@@ -92,7 +99,7 @@ Baseline components:
 - detector: `PP-OCRv5_server_det`;
 - recognizer: `arabic_PP-OCRv5_mobile_rec`;
 - optional text-line orientation model: `PP-LCNet_x1_0_textline_ori` when enabled;
-- device: CPU by default;
+- device: `gpu:0` by default, with explicit `cpu` override;
 - MKLDNN/oneDNN: disabled by default through `WIKI_HAMI_OCR_ENABLE_MKLDNN=false`.
 
 Paddle produces text lines. Wiki Hami groups these lines geometrically into canonical paragraph objects. Paragraph grouping is intentionally not semantic section reconstruction.
@@ -103,7 +110,7 @@ Current paragraph polygon is derived from the paragraph union bounding box, so i
 
 ### OCR operational notes
 
-Each real backend's shared PaddleOCR model instance is guarded by a prediction lock.
+Each real backend's shared model instances are guarded by a prediction lock.
 The document orchestrator may keep multiple page pipelines active, but predictions
 for one backend instance are serialized through that lock.
 
@@ -111,18 +118,20 @@ for one backend instance are serialized through that lock.
 
 ### Bina Rizeh full-page backend
 
-`bina_rizeh` follows the official `bina_page_ocr.py` design in process. On first
-prediction it fetches only the pinned repository's `inference/` and `detector/`
-directories into the configured Hugging Face cache, then creates one reusable
-PaddleOCR pipeline with those local directories. The full page is detected using
-the bundled `PaddlePaddle/PP-OCRv6_medium_det` revision
-`8e0f56fb2ef86b461d99cfc7ac5c137738985f61`; recognition is Bina revision
-`4e8cf8806c08442276dcb5ed4a112329945a9bbe`.
+`bina_rizeh` is an in-process full-page composition, not the incompatible
+combined `PaddleOCR` pipeline. It lazily creates an independent `TextDetection`
+using `PaddlePaddle/PP-OCRv6_medium_det` revision
+`8e0f56fb2ef86b461d99cfc7ac5c137738985f61`, rectifies each detected quadrilateral
+into a horizontal line crop (rotating tall crops clockwise), and passes batches
+to `TextRecognition` from `Reza2kn/Bina-0.2-RizehPizeh` revision
+`993527413ff74ef6d446df91c715a4e0825abe5b`.
 
-The official wrapper returns logical Persian line text, raw visual-order text,
-model score, and line boxes. Wiki Hami keeps logical text in `text` and the raw
-visual trace in `raw_text`; it does not synthesize polygons when the upstream
-page output provides only boxes. Bina scores are model scores, not calibrated
+Only each repository's three runtime inference files are downloaded through the
+Hugging Face cache. Files are validated before model initialization, including
+Git LFS pointer rejection. Detector polygons remain in prepared-page coordinates
+and the existing adapter restores them to source space exactly once. Wiki Hami
+keeps logical text in `text` and visual-order recognizer output in `raw_text`.
+Bina scores are model scores, not calibrated
 probabilities, so `WIKI_HAMI_OCR_BINA_SCORE_THRESHOLD` is distinct from
 Paddle's `WIKI_HAMI_OCR_SCORE_THRESHOLD`.
 
@@ -209,32 +218,35 @@ The current RF-DETR runtime may report that the checkpoint class count differs f
 WIKI_HAMI_OCR_BACKEND=paddle
 WIKI_HAMI_OCR_MODEL_ID=PaddlePaddle/arabic_PP-OCRv5_mobile_rec
 WIKI_HAMI_OCR_TEXT_DETECTION_MODEL_NAME=PP-OCRv5_server_det
-WIKI_HAMI_OCR_DEVICE=cpu
+WIKI_HAMI_OCR_DEVICE=gpu:0
 WIKI_HAMI_OCR_ENABLE_MKLDNN=false
 WIKI_HAMI_OCR_SCORE_THRESHOLD=0.45
 WIKI_HAMI_OCR_USE_TEXTLINE_ORIENTATION=true
 
-# Persian-focused Bina Rizeh full-page pipeline
+# Persian-focused Bina Rizeh full-page composition
 WIKI_HAMI_OCR_BACKEND=bina_rizeh
-WIKI_HAMI_OCR_BINA_MODEL_ID=Reza2kn/Bina-0.2-Rizeh
-WIKI_HAMI_OCR_BINA_REVISION=4e8cf8806c08442276dcb5ed4a112329945a9bbe
+WIKI_HAMI_OCR_BINA_MODEL_ID=Reza2kn/Bina-0.2-RizehPizeh
+WIKI_HAMI_OCR_BINA_REVISION=993527413ff74ef6d446df91c715a4e0825abe5b
 WIKI_HAMI_OCR_BINA_SCORE_THRESHOLD=0.0
+WIKI_HAMI_OCR_BINA_BATCH_SIZE=1
+WIKI_HAMI_OCR_DETECTION_MODEL_ID=PaddlePaddle/PP-OCRv6_medium_det
+WIKI_HAMI_OCR_DETECTION_MODEL_REVISION=8e0f56fb2ef86b461d99cfc7ac5c137738985f61
 
 WIKI_HAMI_FIGURE_TABLE_BACKEND=pp_doclayout
 WIKI_HAMI_FIGURE_TABLE_MODEL_ID=PaddlePaddle/PP-DocLayoutV3
-WIKI_HAMI_FIGURE_TABLE_DEVICE=cpu
+WIKI_HAMI_FIGURE_TABLE_DEVICE=gpu:0
 WIKI_HAMI_FIGURE_TABLE_SCORE_THRESHOLD=0.45
 
 WIKI_HAMI_STAMP_SIGNATURE_BACKEND=rfdetr
 WIKI_HAMI_STAMP_SIGNATURE_MODEL_ID=bluecopa/rf-detr-stamp-signature-detector
-WIKI_HAMI_STAMP_SIGNATURE_DEVICE=cpu
+WIKI_HAMI_STAMP_SIGNATURE_DEVICE=cuda:0
 WIKI_HAMI_STAMP_SIGNATURE_SCORE_THRESHOLD=0.50
 ```
 
 For exact default values, treat `app/core/config.py` and `.env.example` as the implementation source of truth.
 
 Use `WIKI_HAMI_OCR_BACKEND=paddle` to roll back without changing API, artifact,
-or layout contracts. The image and Compose configuration install CPU PaddlePaddle;
-`WIKI_HAMI_OCR_DEVICE=gpu:0` requires a separately verified CUDA-compatible
-PaddlePaddle GPU installation and GPU exposure to both the API and Celery worker.
-This repository does not provide or test that GPU deployment path.
+or layout contracts. Root and production Compose reserve an NVIDIA GPU for both
+API and worker because synchronous engineering endpoints can infer in the API.
+GPU builds require deployment-selected official Paddle/PyTorch indexes. GPU
+execution remains unverified in this repository; the CPU profile remains available.

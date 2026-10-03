@@ -13,6 +13,7 @@ import numpy as np
 from PIL import Image
 
 from app.core.config import Settings
+from app.core.devices import require_paddle_device
 from app.modules.ocr.backend import OCRBackendMetadata
 from app.modules.ocr.types import OCRLine
 from app.schemas.common import BBox, Point, Polygon
@@ -89,6 +90,7 @@ class PaddleOCRBackend:
             if self._model is not None:
                 return self._model
             try:
+                import paddle
                 from paddleocr import PaddleOCR
             except ImportError as exc:  # pragma: no cover - only when model extra is absent
                 raise RuntimeError(
@@ -97,6 +99,7 @@ class PaddleOCRBackend:
                 ) from exc
 
             device = self.settings.ocr_device
+            require_paddle_device(device, paddle)
             self._model = PaddleOCR(
                 text_detection_model_name=self.settings.ocr_text_detection_model_name,
                 text_recognition_model_name=self.settings.ocr_model_id.split("/")[-1],

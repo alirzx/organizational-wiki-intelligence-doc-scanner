@@ -212,6 +212,11 @@ python -m pip install -r requirements-torch-cpu.txt \
 python -m pip install -r requirements-models.txt
 ```
 
+For GPU models, set `PADDLE_GPU_INDEX_URL` and `TORCH_GPU_INDEX_URL` to the
+official package indexes verified for the target CUDA/driver combination, then
+run `make install-models-gpu`. The repository intentionally does not guess a
+CUDA wheel index.
+
 Local processes:
 
 ```bash
@@ -228,8 +233,11 @@ At minimum configure real model backends, MinIO, Redis, Backend API authenticati
 
 ```env
 WIKI_HAMI_OCR_BACKEND=paddle
+WIKI_HAMI_OCR_DEVICE=gpu:0
 WIKI_HAMI_FIGURE_TABLE_BACKEND=pp_doclayout
+WIKI_HAMI_FIGURE_TABLE_DEVICE=gpu:0
 WIKI_HAMI_STAMP_SIGNATURE_BACKEND=rfdetr
+WIKI_HAMI_STAMP_SIGNATURE_DEVICE=cuda:0
 
 WIKI_HAMI_MINIO_ENABLED=true
 WIKI_HAMI_MINIO_ENDPOINT=minio:9000
@@ -253,15 +261,19 @@ For a Persian-focused Bina Rizeh deployment, replace the OCR selection above wit
 
 ```dotenv
 WIKI_HAMI_OCR_BACKEND=bina_rizeh
-WIKI_HAMI_OCR_DEVICE=cpu
-WIKI_HAMI_OCR_BINA_MODEL_ID=Reza2kn/Bina-0.2-Rizeh
-WIKI_HAMI_OCR_BINA_REVISION=4e8cf8806c08442276dcb5ed4a112329945a9bbe
+WIKI_HAMI_OCR_DEVICE=gpu:0
+WIKI_HAMI_OCR_BINA_MODEL_ID=Reza2kn/Bina-0.2-RizehPizeh
+WIKI_HAMI_OCR_BINA_REVISION=993527413ff74ef6d446df91c715a4e0825abe5b
 WIKI_HAMI_OCR_BINA_SCORE_THRESHOLD=0.0
+WIKI_HAMI_OCR_BINA_BATCH_SIZE=1
+WIKI_HAMI_OCR_DETECTION_MODEL_ID=PaddlePaddle/PP-OCRv6_medium_det
+WIKI_HAMI_OCR_DETECTION_MODEL_REVISION=8e0f56fb2ef86b461d99cfc7ac5c137738985f61
 ```
 
 Roll back without code changes by restoring `WIKI_HAMI_OCR_BACKEND=paddle`.
-Both real OCR backends lazily reuse models per process and share the persistent
-Hugging Face cache. Bina is Persian-focused; this service does not add automatic
+Both real OCR backends lazily reuse models per process and share persistent
+model caches. Bina detects full-page lines with PP-OCRv6, rectifies each crop,
+then invokes the official Bina line recognizer. Bina is Persian-focused; this service does not add automatic
 Persian/English language detection or per-line routing, and Bina does not claim
 benchmark-backed English accuracy.
 
@@ -272,6 +284,11 @@ Never commit real credentials.
 The application image is shared by API, worker, and optional UI. The Compose project uses the external `wikio` network and a persistent model cache.
 
 ```bash
+# CPU build (portable fallback; set the three model device settings to cpu)
+WIKI_HAMI_MODEL_RUNTIME=cpu docker compose \
+  -f compose.yaml -f compose.cpu.yaml up -d --build
+
+# GPU build requires verified official wheel indexes in .env
 docker compose up -d --build
 docker compose ps
 docker compose logs --tail=100 worker

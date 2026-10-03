@@ -7,7 +7,7 @@ Backend
   -> FastAPI /extract/minio
        -> Redis queue
             -> Celery worker
-                 -> three CPU extraction modules
+                 -> three extraction modules
                  -> MinIO artifacts
                  -> Backend callback
 ```
@@ -32,8 +32,11 @@ Core values:
 ```env
 WIKI_HAMI_OCR_BACKEND=paddle  # or bina_rizeh for the Persian-focused Bina page pipeline
 WIKI_HAMI_OCR_ENABLE_MKLDNN=false
+WIKI_HAMI_OCR_DEVICE=gpu:0
 WIKI_HAMI_FIGURE_TABLE_BACKEND=pp_doclayout
+WIKI_HAMI_FIGURE_TABLE_DEVICE=gpu:0
 WIKI_HAMI_STAMP_SIGNATURE_BACKEND=rfdetr
+WIKI_HAMI_STAMP_SIGNATURE_DEVICE=cuda:0
 
 WIKI_HAMI_MAX_PAGES_PER_DOCUMENT=200
 WIKI_HAMI_MODULE_TIMEOUT_SECONDS=360
@@ -57,7 +60,7 @@ WIKI_HAMI_CALLBACK_MAX_ATTEMPTS=3
 
 Use the actual Backend DNS alias reachable from the worker.
 
-Pinned CPU OCR runtime:
+Pinned OCR runtime:
 
 ```text
 PaddlePaddle 3.2.2
@@ -67,7 +70,7 @@ PaddleX      3.7.2
 
 ## Start / update
 
-Current root Compose:
+Current root Compose (GPU profile requires verified official wheel indexes in `.env`):
 
 ```bash
 docker compose up -d --build
@@ -83,6 +86,8 @@ docker compose -f deployment/compose.prod.yaml up -d
 The worker command is `python run.py --worker`; it consumes the configured extraction queue with concurrency `1`.
 
 When requirements change, rebuild the image before recreating API/worker so the new dependency pins are installed.
+For the portable CPU profile, set every model device to `cpu` and run
+`WIKI_HAMI_MODEL_RUNTIME=cpu docker compose -f compose.yaml -f compose.cpu.yaml up -d --build`.
 
 ## Verify
 
