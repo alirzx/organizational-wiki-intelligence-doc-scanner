@@ -16,6 +16,7 @@ _ZWNJ_SPACING_RE = re.compile(r"[ \t]*\u200c[ \t]*")
 _SPACE_BEFORE_PUNCT_RE = re.compile(r"[ \t]+([،؛؟!?.,:])")
 _SPACE_AFTER_OPEN_RE = re.compile(r"([\(\[\{«])[ \t]+")
 _SPACE_BEFORE_CLOSE_RE = re.compile(r"[ \t]+([\)\]\}»])")
+_ASCII_LTR_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:[._:/%+@-][A-Za-z0-9]+)*")
 
 _ARABIC_TO_PERSIAN = str.maketrans(
     {
@@ -34,6 +35,30 @@ _ARABIC_TO_PERSIAN = str.maketrans(
         "٩": "۹",
     }
 )
+
+
+def visual_persian_to_logical(value: str) -> str:
+    """Convert Bina's visual-order Persian line output into logical Unicode order.
+
+    Bina emits Persian glyphs in visual order, while ASCII/Latin runs such as IDs,
+    dates, URLs, and English words are already internally left-to-right. We therefore
+    reverse the sequence of visual units while preserving each ASCII LTR token as one
+    unit. Spaces and Persian digits remain visual units and move with the RTL text.
+    This mirrors the model contract without applying browser/display bidi transforms.
+    """
+
+    visual = unicodedata.normalize("NFC", value or "")
+    units: list[str] = []
+    index = 0
+    while index < len(visual):
+        match = _ASCII_LTR_TOKEN_RE.match(visual, index)
+        if match is not None:
+            units.append(match.group(0))
+            index = match.end()
+            continue
+        units.append(visual[index])
+        index += 1
+    return "".join(reversed(units))
 
 
 def normalize_ocr_text(value: str) -> str:
