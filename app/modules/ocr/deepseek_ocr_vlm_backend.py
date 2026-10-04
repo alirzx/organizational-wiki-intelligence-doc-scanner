@@ -23,10 +23,20 @@ _GROUNDING_PAIR_RE = re.compile(
     r"<\|ref\|>(.*?)<\|/ref\|>\s*<\|det\|>(.*?)<\|/det\|>",
     re.DOTALL,
 )
-_MODEL_CONTROL_PREFIX_RE = re.compile(
-    r"^\s*(?:\\?</?im_(?:start|end)>|<\\?im_(?:start|end)>|<br\s*/?>|\\</?im_(?:start|end)>)+\s*",
+_MODEL_CONTROL_TOKEN_RE = re.compile(
+    r"(?:\\?<\|(?:im_start|im_end)\|>|\\?</?im_(?:start|end)>|<\\?/?im_(?:start|end)>)",
     re.IGNORECASE,
 )
+_LEADING_MODEL_ARTIFACT_RE = re.compile(
+    r"^\s*[*_`#-]*\s*(?:\\?<\|(?:im_start|im_end)\|>|\\?</?im_(?:start|end)>|<\\?/?im_(?:start|end)>)(?:\s*<br\s*/?>)?\s*",
+    re.IGNORECASE,
+)
+_HTML_BREAK_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_MARKDOWN_FENCE_RE = re.compile(r"(?m)^\s*```[^\n]*\s*$")
+_MARKDOWN_HEADING_RE = re.compile(r"(?m)^\s{0,3}#{1,6}[ \t]+")
+_MARKDOWN_UNORDERED_LIST_RE = re.compile(r"(?m)^(\s*)[*+][ \t]+")
+_MARKDOWN_ORPHAN_MARKER_RE = re.compile(r"(?m)^\s*[*_`]{1,3}\s*$")
+_EXCESS_BLANK_LINES_RE = re.compile(r"\n{3,}")
 _DEEPSEEK_COORD_MAX = 999.0
 
 
@@ -70,19 +80,38 @@ def _parse_coordinate_boxes(value: str, *, index: int) -> list[list[float]]:
 
 
 def _clean_plain_text_response(content: str) -> str:
-    """Remove Ollama/model wrapper artifacts without rewriting OCR content."""
+    """Remove model/template artifacts while preserving OCR lexical content.
 
-    cleaned = (content or "").strip()
-    # Some DeepSeek-OCR Ollama builds prepend escaped image boundary tokens such
-    # as ``\</im_start><\im_end><br>`` before otherwise valid OCR text.
-    for _ in range(3):
-        updated = _MODEL_CONTROL_PREFIX_RE.sub("", cleaned).lstrip()
+    Some Ollama DeepSeek-OCR templates leak image-boundary tokens in either the
+    XML-like form (``</im_start>``) or the tokenizer form (``<|im_end|>``). The
+    production frontend must never receive those transport artifacts. Markdown
+    decoration emitted by document-mode OCR is reduced to plain-text structure,
+    while actual recognized words, punctuation, list order, and line breaks are
+    retained.
+    """
+
+    cleaned = (content or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    # Strip wrapper junk at the beginning, including cases observed in
+    # production such as ``*<|im_end|> text``.
+    for _ in range(4):
+        updated = _LEADING_MODEL_ARTIFACT_RE.sub("", cleaned, count=1)
         if updated == cleaned:
             break
-        cleaned = updated
-    cleaned = re.sub(r"^\\?</?im_start>\s*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"^<\\?im_end>\s*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"^<br\s*/?>\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = updated.lstrip()
+
+    # Remove any remaining control tokens without touching OCR words around them.
+    cleaned = _MODEL_CONTROL_TOKEN_RE.sub("", cleaned)
+    cleaned = _HTML_BREAK_RE.sub("\n", cleaned)
+
+    # Canonical artifacts are plain text rather than Markdown. Preserve list
+    # semantics using '-' while dropping presentation-only markup.
+    cleaned = _MARKDOWN_FENCE_RE.sub("", cleaned)
+    cleaned = _MARKDOWN_HEADING_RE.sub("", cleaned)
+    cleaned = _MARKDOWN_UNORDERED_LIST_RE.sub(r"\1- ", cleaned)
+    cleaned = cleaned.replace("**", "").replace("__", "")
+    cleaned = _MARKDOWN_ORPHAN_MARKER_RE.sub("", cleaned)
+    cleaned = _EXCESS_BLANK_LINES_RE.sub("\n\n", cleaned)
     return cleaned.strip()
 
 
@@ -145,11 +174,9 @@ def parse_deepseek_output(
 ) -> list[OCRLine]:
     """Parse grounded output when available, otherwise preserve full-page OCR text.
 
-    The Ollama DeepSeek-OCR build deployed for Wiki Hami currently returns clean
-    document text/Markdown even when given the grounding prompt, without ``ref``/
-    ``det`` tags. In that case the V1 object schema is kept stable by returning one
-    full-page text object. Its metadata explicitly marks geometry/confidence as
-    unavailable rather than fabricating region coordinates or probabilities.
+    The deployed Ollama build may return document text/Markdown without ``ref``/
+    ``det`` tags. In that case the V1 object schema stays unchanged: one full-page
+    text object is returned, while metadata marks geometry/confidence unavailable.
     """
 
     if not isinstance(content, str) or not content.strip():

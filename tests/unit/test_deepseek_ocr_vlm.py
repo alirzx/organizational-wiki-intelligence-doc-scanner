@@ -93,6 +93,42 @@ def test_plain_text_output_uses_full_page_fallback_and_cleans_model_prefix():
     assert lines[0].polygon is None
 
 
+def test_plain_text_output_cleans_production_tokenizer_artifacts():
+    content = (
+        "*<|im_end|>  هیأت وزیران در جلسه ۱۳۹۴ تشکیل شد.\n\n"
+        "<|im_start|><br>ماده ۱- متن آیین نامه<|im_end|>"
+    )
+    lines = parse_deepseek_output(content, image_width=100, image_height=200)
+
+    assert len(lines) == 1
+    assert lines[0].text == (
+        "هیأت وزیران در جلسه ۱۳۹۴ تشکیل شد.\n\n"
+        "ماده ۱- متن آیین نامه"
+    )
+    assert "<|im_end|>" not in lines[0].text
+    assert "<|im_start|>" not in lines[0].text
+    assert lines[0].raw_text == lines[0].text
+
+
+def test_plain_text_output_reduces_markdown_to_canonical_plain_text():
+    content = (
+        "```markdown\n"
+        "# عنوان سند\n\n"
+        "* بند اول\n"
+        "+ بند دوم با **تأکید**\n"
+        "```"
+    )
+    lines = parse_deepseek_output(content, image_width=100, image_height=200)
+
+    assert lines[0].text == (
+        "عنوان سند\n\n"
+        "- بند اول\n"
+        "- بند دوم با تأکید"
+    )
+    assert "```" not in lines[0].text
+    assert "**" not in lines[0].text
+
+
 def test_ollama_backend_posts_image_to_chat_endpoint(monkeypatch):
     captured = {}
 
