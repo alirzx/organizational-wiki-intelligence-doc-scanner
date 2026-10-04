@@ -104,14 +104,14 @@ def parse_deepseek_grounding_output(
                 Point(x=x1, y=y2),
             ]
         )
-        # Ollama/DeepSeek-OCR does not expose a per-span confidence score. Keep
-        # the required V1 schema numeric field stable and declare its semantics
-        # explicitly in backend metadata rather than inventing a probability.
+        # DeepSeek-OCR via Ollama does not expose per-span probabilities. The
+        # existing V1 contract requires a numeric confidence, so zero is used as
+        # an explicit "unavailable" sentinel and the metadata below declares it.
         lines.append(
             OCRLine(
                 text=text,
                 raw_text=raw_text,
-                confidence=1.0,
+                confidence=0.0,
                 bbox=bbox,
                 polygon=polygon,
             )
@@ -138,7 +138,7 @@ class DeepSeekOCRVLMBackend:
                 "vlm_backend": self.settings.vlm_backend,
                 "grounding_coordinate_space": "deepseek_0_999",
                 "confidence_available": False,
-                "confidence_semantics": "schema_placeholder_only",
+                "confidence_semantics": "unavailable_sentinel_zero",
             },
         )
 
