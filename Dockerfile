@@ -18,36 +18,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt requirements-models.txt \
-    requirements-paddle-cpu.txt requirements-paddle-gpu.txt \
-    requirements-torch-cpu.txt requirements-torch-gpu.txt ./
+    requirements-paddle-gpu.txt requirements-torch-gpu.txt ./
 
-ARG INSTALL_MODELS=true
-ARG MODEL_RUNTIME=gpu
-ARG PADDLE_GPU_INDEX_URL
-ARG TORCH_GPU_INDEX_URL
+# Production is GPU-only. These CUDA wheel channels match the runtime that was
+# validated for Wiki Hami: PaddlePaddle 3.2.2 on CUDA 12.9 and PyTorch 2.14.0 /
+# torchvision 0.29.0 on CUDA 13.0. Keeping the indexes here makes CI builds
+# deterministic instead of depending on empty deployment-time build arguments.
 RUN python -m pip install --upgrade pip && \
-    if [ "$INSTALL_MODELS" = "true" ]; then \
-      if [ "$MODEL_RUNTIME" = "gpu" ]; then \
-        test -n "$PADDLE_GPU_INDEX_URL" || \
-          (echo "PADDLE_GPU_INDEX_URL is required for MODEL_RUNTIME=gpu" >&2; exit 1); \
-        test -n "$TORCH_GPU_INDEX_URL" || \
-          (echo "TORCH_GPU_INDEX_URL is required for MODEL_RUNTIME=gpu" >&2; exit 1); \
-        python -m pip install -r requirements-paddle-gpu.txt \
-          --index-url "$PADDLE_GPU_INDEX_URL" && \
-        python -m pip install -r requirements-torch-gpu.txt \
-          --index-url "$TORCH_GPU_INDEX_URL"; \
-      elif [ "$MODEL_RUNTIME" = "cpu" ]; then \
-        python -m pip install -r requirements-paddle-cpu.txt \
-          -i https://www.paddlepaddle.org.cn/packages/stable/cpu/ && \
-        python -m pip install -r requirements-torch-cpu.txt \
-          --index-url https://download.pytorch.org/whl/cpu; \
-      else \
-        echo "MODEL_RUNTIME must be 'cpu' or 'gpu'" >&2; exit 1; \
-      fi && \
-      python -m pip install -r requirements-models.txt; \
-    else \
-      python -m pip install -r requirements.txt; \
-    fi
+    python -m pip install -r requirements-paddle-gpu.txt \
+      --index-url https://www.paddlepaddle.org.cn/packages/stable/cu129/ && \
+    python -m pip install -r requirements-torch-gpu.txt \
+      --index-url https://download.pytorch.org/whl/cu130 && \
+    python -m pip install -r requirements-models.txt
 
 COPY . .
 
