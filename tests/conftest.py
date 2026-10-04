@@ -2,6 +2,7 @@
 
 import os
 
+os.environ["WIKI_HAMI_TEXT_EXTRACTION_MODE"] = "ocr"
 os.environ["WIKI_HAMI_OCR_BACKEND"] = "mock"
 os.environ["WIKI_HAMI_FIGURE_TABLE_BACKEND"] = "mock"
 os.environ["WIKI_HAMI_STAMP_SIGNATURE_BACKEND"] = "mock"
