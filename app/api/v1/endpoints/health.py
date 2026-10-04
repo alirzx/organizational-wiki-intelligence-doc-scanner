@@ -12,7 +12,7 @@ settings = get_settings()
     summary="Service/configuration liveness",
     description=(
         "Reports configured model backends and MinIO settings without loading models or contacting "
-        "MinIO. Use /api/v1/storage/minio/health when storage connectivity must be verified."
+        "MinIO/Ollama. Use /api/v1/storage/minio/health when storage connectivity must be verified."
     ),
 )
 async def health():
@@ -22,7 +22,11 @@ async def health():
         "service": settings.app_name,
         "schema_version": settings.schema_version,
         "modules": {
-            "ocr": {"backend": ocr_metadata.backend, "model_id": ocr_metadata.model_id},
+            "ocr": {
+                "mode": settings.text_extraction_mode,
+                "backend": ocr_metadata.backend,
+                "model_id": ocr_metadata.model_id,
+            },
             "figure_table": {
                 "backend": settings.figure_table_backend,
                 "model_id": settings.figure_table_model_id,
