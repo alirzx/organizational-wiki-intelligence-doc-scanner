@@ -6,3 +6,5 @@ models/
 data/outputs/
 *.pyc
 .env
+.codex/
+AGENTS.md
