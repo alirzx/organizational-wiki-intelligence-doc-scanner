@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 from statistics import median
 
+from app.modules.ocr.text_normalization import normalize_ocr_text
 from app.modules.ocr.types import OCRLine, OCRParagraph
 from app.schemas.common import BBox, Point, Polygon
 
@@ -95,7 +96,6 @@ _PERSIAN_MARKER_ALIASES = (
 )
 _PERSIAN_MARKER_CANONICAL = {"هـ": "ه", "ك": "ک", "ي": "ی", "ى": "ی"}
 _MARKER_SEPARATORS = "-–—ـ.:؛،)"
-_HORIZONTAL_WS_RE = re.compile(r"[^\S\r\n]+")
 
 _STRUCTURAL_START_RE = re.compile(
     r"^(?:ماده|تبصره|فصل|بخش|بند|chapter|section|article|clause)"
@@ -135,7 +135,9 @@ def _bbox_polygon(bbox: BBox) -> Polygon:
 
 
 def _normalize_inline_whitespace(value: str) -> str:
-    return _HORIZONTAL_WS_RE.sub(" ", value.strip())
+    """Apply canonical text cleanup while preserving language and lexical content."""
+
+    return normalize_ocr_text(value)
 
 
 def _canonical_persian_marker(value: str) -> str:
