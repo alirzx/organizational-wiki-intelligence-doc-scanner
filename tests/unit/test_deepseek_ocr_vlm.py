@@ -14,8 +14,13 @@ from app.modules.ocr.deepseek_ocr_vlm_backend import (
 from app.modules.ocr.paddle_backend import PaddleOCRBackend
 
 
-def test_vlm_is_default_text_extraction_mode():
-    settings = Settings(_env_file=None)
+def test_vlm_defaults_can_be_selected_explicitly():
+    settings = Settings(
+        _env_file=None,
+        text_extraction_mode="vlm",
+        vlm_backend="ollama",
+        vlm_model_id="deepseek-ocr:3b",
+    )
     assert settings.text_extraction_mode == "vlm"
     assert settings.vlm_backend == "ollama"
     assert settings.vlm_model_id == "deepseek-ocr:3b"
@@ -52,6 +57,7 @@ def test_grounding_parser_maps_coordinates_and_normalizes_persian():
 
     assert [line.text for line in lines] == ["سلام دنیا", "OpenAI-123"]
     assert lines[0].raw_text == "سلام دنيا"
+    assert lines[0].confidence == 0.0
     assert lines[0].bbox.x1 == pytest.approx(100 / 999 * 1000)
     assert lines[0].bbox.y1 == pytest.approx(200 / 999 * 2000)
     assert lines[0].polygon is not None
@@ -111,3 +117,4 @@ def test_ollama_backend_posts_image_to_chat_endpoint(monkeypatch):
     assert base64.b64decode(encoded).startswith(b"\x89PNG")
     assert [line.text for line in lines] == ["متن"]
     assert backend.metadata.object_metadata["confidence_available"] is False
+    assert backend.metadata.object_metadata["confidence_semantics"] == "unavailable_sentinel_zero"
