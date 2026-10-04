@@ -2,11 +2,6 @@ services:
   api:
     build:
       context: .
-      args:
-        INSTALL_MODELS: "true"
-        MODEL_RUNTIME: ${WIKI_HAMI_MODEL_RUNTIME:-gpu}
-        PADDLE_GPU_INDEX_URL: ${WIKI_HAMI_PADDLE_GPU_INDEX_URL:-}
-        TORCH_GPU_INDEX_URL: ${WIKI_HAMI_TORCH_GPU_INDEX_URL:-}
     image: wiki-hami-extraction:0.2.0
     env_file:
       - .env
