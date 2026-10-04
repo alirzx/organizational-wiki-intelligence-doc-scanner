@@ -19,6 +19,7 @@ from ui.module_runs import (
     MODULE_LABELS,
     success_message,
 )
+from ui.text_rendering import bidi_safe_text_html, canonical_ocr_display_text
 from ui.visualizer import annotate_page, legend_html, open_source_image
 
 
@@ -407,7 +408,19 @@ with result_tab:
                     st.info("OCR was not executed for this run.")
                 else:
                     paragraphs = [obj for obj in objects if obj.get("type") == "paragraph"]
-                    st.text("\n\n".join(obj.get("raw_text") or obj.get("text") or "" for obj in paragraphs))
+                    canonical_text = canonical_ocr_display_text(paragraphs)
+                    st.caption("Canonical OCR text · logical Unicode order")
+                    if canonical_text:
+                        st.markdown(bidi_safe_text_html(canonical_text), unsafe_allow_html=True)
+                    else:
+                        st.info("No OCR text was produced for this page.")
+                    with st.expander("Raw model OCR (debug)", expanded=False):
+                        st.code(
+                            "\n\n".join(
+                                obj.get("raw_text") or "" for obj in paragraphs if obj.get("raw_text")
+                            ),
+                            language=None,
+                        )
                     st.json(paragraphs)
             with tabs[1]:
                 if "figure_table" not in page.get("modules", {}):
