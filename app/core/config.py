@@ -4,7 +4,9 @@ from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+SUPPORTED_TEXT_EXTRACTION_MODES = frozenset({"ocr", "vlm"})
 SUPPORTED_OCR_BACKENDS = frozenset({"mock", "paddle", "bina_rizeh"})
+SUPPORTED_VLM_BACKENDS = frozenset({"ollama"})
 
 
 class Settings(BaseSettings):
@@ -50,9 +52,13 @@ class Settings(BaseSettings):
     callback_timeout_seconds: float = 15.0
     callback_max_attempts: int = 3
 
-    # OCR: selectable full-page pipelines. Paddle-specific settings remain below
-    # for backward compatibility.
-    ocr_backend: str = "mock"
+    # Text extraction selection. Keep the public OCR module/API/artifact contract
+    # stable while allowing the implementation to switch between classic OCR and
+    # a remote VLM entirely through configuration.
+    text_extraction_mode: str = "vlm"  # ocr | vlm
+
+    # Classic OCR path.
+    ocr_backend: str = "bina_rizeh"  # mock | paddle | bina_rizeh
     ocr_model_id: str = "PaddlePaddle/arabic_PP-OCRv5_mobile_rec"
     ocr_text_detection_model_name: str = "PP-OCRv5_server_det"
     ocr_device: str = "gpu:0"
@@ -71,6 +77,14 @@ class Settings(BaseSettings):
     ocr_detection_model_revision: str = "8e0f56fb2ef86b461d99cfc7ac5c137738985f61"
     ocr_paragraph_max_gap_ratio: float = 1.8
     ocr_paragraph_min_x_overlap: float = 0.15
+
+    # VLM path. DeepSeek-OCR is served remotely by Ollama so the Wiki Hami
+    # application does not load another local GPU model when this mode is active.
+    vlm_backend: str = "ollama"
+    vlm_model_id: str = "deepseek-ocr:3b"
+    vlm_base_url: str = "http://localhost:11434"
+    vlm_timeout_seconds: float = 360.0
+    vlm_prompt: str = "<|grounding|>OCR this image."
 
     # Layout localization.
     figure_table_backend: str = "mock"
@@ -106,6 +120,15 @@ class Settings(BaseSettings):
     def table_label_set(self) -> set[str]:
         return {value.strip().lower() for value in self.table_labels.split(",") if value.strip()}
 
+    @field_validator("text_extraction_mode")
+    @classmethod
+    def validate_text_extraction_mode(cls, value: str) -> str:
+        mode = value.strip().lower()
+        if mode not in SUPPORTED_TEXT_EXTRACTION_MODES:
+            supported = ", ".join(sorted(SUPPORTED_TEXT_EXTRACTION_MODES))
+            raise ValueError(f"text_extraction_mode must be one of: {supported}")
+        return mode
+
     @field_validator("ocr_backend")
     @classmethod
     def validate_ocr_backend(cls, value: str) -> str:
@@ -114,6 +137,23 @@ class Settings(BaseSettings):
             supported = ", ".join(sorted(SUPPORTED_OCR_BACKENDS))
             raise ValueError(f"ocr_backend must be one of: {supported}")
         return backend
+
+    @field_validator("vlm_backend")
+    @classmethod
+    def validate_vlm_backend(cls, value: str) -> str:
+        backend = value.strip().lower()
+        if backend not in SUPPORTED_VLM_BACKENDS:
+            supported = ", ".join(sorted(SUPPORTED_VLM_BACKENDS))
+            raise ValueError(f"vlm_backend must be one of: {supported}")
+        return backend
+
+    @field_validator("vlm_base_url")
+    @classmethod
+    def normalize_vlm_base_url(cls, value: str) -> str:
+        normalized = value.strip().rstrip("/")
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("vlm_base_url must start with http:// or https://")
+        return normalized
 
 
 @lru_cache
