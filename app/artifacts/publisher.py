@@ -6,6 +6,7 @@ from io import BytesIO
 
 from PIL import Image
 
+from app.modules.ocr.text_normalization import normalize_ocr_text
 from app.orchestration.extractor import DocumentRunResult
 from app.schemas.detection import DetectedObject, ObjectType
 from app.schemas.status import ModuleName
@@ -53,15 +54,19 @@ class ArtifactPublisher:
 
     @staticmethod
     def _ocr_plain_text(objects: list[DetectedObject]) -> str:
-        # ``text`` is the conservative layout-aware representation used by humans and
-        # downstream stages. ``raw_text`` remains available in the JSON artifact for
-        # exact OCR/model traceability.
-        lines = [
-            (obj.text or obj.raw_text or "").strip()
-            for obj in objects
-            if obj.type == ObjectType.PARAGRAPH and (obj.text or obj.raw_text)
-        ]
-        return "\n\n".join(line for line in lines if line).strip() + ("\n" if lines else "")
+        # ``text`` is canonical logical-order OCR text. ``raw_text`` stays in JSON for
+        # exact model traceability and must never be preferred for human/product text.
+        paragraphs: list[str] = []
+        for obj in objects:
+            if obj.type != ObjectType.PARAGRAPH:
+                continue
+            value = obj.text if obj.text is not None else obj.raw_text
+            if not value:
+                continue
+            normalized = normalize_ocr_text(value)
+            if normalized:
+                paragraphs.append(normalized)
+        return "\n\n".join(paragraphs).strip() + ("\n" if paragraphs else "")
 
     @staticmethod
     def _crop_png(source: Image.Image, obj: DetectedObject) -> bytes:
