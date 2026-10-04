@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -16,6 +15,10 @@ from app.core.config import Settings
 from app.core.devices import require_paddle_device
 from app.modules.ocr.backend import OCRBackendMetadata
 from app.modules.ocr.paddle_backend import _json_payload
+from app.modules.ocr.text_normalization import (
+    normalize_persian_ocr_text,
+    visual_persian_to_logical,
+)
 from app.modules.ocr.types import OCRLine
 from app.schemas.common import BBox, Point, Polygon
 
@@ -30,7 +33,6 @@ DETECTOR_RUNTIME_FILES = (
     "inference.pdiparams",
     "inference.yml",
 )
-_LTR_RUN = re.compile(r"[a-zA-Z0-9 :*./%+-]")
 _LFS_POINTER = b"version https://git-lfs.github.com/spec/v1"
 
 
@@ -45,20 +47,9 @@ class _DetectedLine:
 
 
 def logical_persian_text(visual_text: str) -> str:
-    """Apply Bina's published visual-to-logical line ordering routine."""
-    segments: list[str] = []
-    current_ltr = ""
-    for character in visual_text:
-        if _LTR_RUN.search(character):
-            current_ltr += character
-            continue
-        if current_ltr:
-            segments.append(current_ltr)
-            current_ltr = ""
-        segments.append(character)
-    if current_ltr:
-        segments.append(current_ltr)
-    return "".join(reversed(segments))
+    """Convert Bina visual-order output to normalized logical Persian text."""
+
+    return normalize_persian_ocr_text(visual_persian_to_logical(visual_text))
 
 
 def _number(value: Any, *, field_name: str) -> float:
