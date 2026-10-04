@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     # VLM path. DeepSeek-OCR is served remotely by Ollama so the Wiki Hami
     # application does not load another local GPU model when this mode is active.
     vlm_backend: str = "ollama"
-    vlm_model_id: str = "deepseek-ocr:3b"
+    vlm_model_id: str = "deepseek-ocr:latest"
     vlm_base_url: str = "http://localhost:11434"
     vlm_timeout_seconds: float = 360.0
     vlm_prompt: str = "<|grounding|>OCR this image."
