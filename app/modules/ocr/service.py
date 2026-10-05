@@ -8,6 +8,7 @@ from app.modules.ocr.backend import MockOCRBackend, create_ocr_backend
 from app.modules.ocr.deepseek_ocr_vlm_backend import DeepSeekOCRVLMBackend, VLMQualityError
 from app.modules.ocr.paddle_backend import PaddleOCRBackend
 from app.modules.ocr.text_normalization import normalize_persian_ocr_text
+from app.modules.ocr.vlm_postprocessing import clean_vlm_lines
 from app.preprocessing.transforms import restore_bbox_to_source
 from app.preprocessing.types import PreparedPage
 from app.schemas.common import BBox
@@ -36,7 +37,7 @@ class OCRService:
         # meaningful page geometry for layout.json.
         if self.settings.vlm_region_fallback:
             try:
-                lines = self._backend.predict_regions(image)
+                lines = clean_vlm_lines(self._backend.predict_regions(image))
                 metadata = replace(primary, object_metadata={
                     **primary.object_metadata,
                     "ocr_strategy": "top_to_bottom_regions",
@@ -49,7 +50,7 @@ class OCRService:
         # remains useful for sparse pages and preserves the previous behavior when
         # region OCR is explicitly disabled.
         try:
-            lines = self._backend.predict(image)
+            lines = clean_vlm_lines(self._backend.predict(image))
             metadata = replace(primary, object_metadata={
                 **primary.object_metadata,
                 "ocr_strategy": "full_page_recovery",
