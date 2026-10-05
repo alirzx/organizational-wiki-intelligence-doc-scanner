@@ -24,6 +24,15 @@ class OCRService:
         self._backend = create_ocr_backend(settings)
         self._fallback = None
 
+    @staticmethod
+    def _require_clean_vlm_text(lines, *, strategy: str):
+        cleaned = clean_vlm_lines(lines)
+        if not cleaned:
+            raise VLMQualityError(
+                f"DeepSeek-OCR {strategy} output contained only model artifacts or image descriptions"
+            )
+        return cleaned
+
     def _predict(self, image):
         primary = self._backend.metadata
         if not isinstance(self._backend, DeepSeekOCRVLMBackend):
@@ -37,7 +46,10 @@ class OCRService:
         # meaningful page geometry for layout.json.
         if self.settings.vlm_region_fallback:
             try:
-                lines = clean_vlm_lines(self._backend.predict_regions(image))
+                lines = self._require_clean_vlm_text(
+                    self._backend.predict_regions(image),
+                    strategy="region",
+                )
                 metadata = replace(primary, object_metadata={
                     **primary.object_metadata,
                     "ocr_strategy": "top_to_bottom_regions",
@@ -50,7 +62,10 @@ class OCRService:
         # remains useful for sparse pages and preserves the previous behavior when
         # region OCR is explicitly disabled.
         try:
-            lines = clean_vlm_lines(self._backend.predict(image))
+            lines = self._require_clean_vlm_text(
+                self._backend.predict(image),
+                strategy="full-page",
+            )
             metadata = replace(primary, object_metadata={
                 **primary.object_metadata,
                 "ocr_strategy": "full_page_recovery",
