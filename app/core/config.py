@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -84,7 +84,15 @@ class Settings(BaseSettings):
     vlm_model_id: str = "deepseek-ocr:latest"
     vlm_base_url: str = "http://localhost:11434"
     vlm_timeout_seconds: float = 360.0
-    vlm_prompt: str = "<|grounding|>OCR this image."
+    vlm_prompt: str = "\nExtract the text in the image."
+    vlm_crop_margins: bool = True
+    vlm_region_fallback: bool = True
+    vlm_classic_fallback: bool = True
+    vlm_diagnostics_dir: str = "data/outputs/ocr-diagnostics"
+    vlm_max_tokens: int = Field(default=4096, ge=1, le=65536)
+    vlm_context_size: int = Field(default=8192, ge=512)
+    vlm_repeat_penalty: float = Field(default=1.1, ge=1.0, le=2.0)
+    vlm_quality_retries: int = Field(default=1, ge=0, le=2)
 
     # Layout localization.
     figure_table_backend: str = "mock"
@@ -137,6 +145,14 @@ class Settings(BaseSettings):
             supported = ", ".join(sorted(SUPPORTED_OCR_BACKENDS))
             raise ValueError(f"ocr_backend must be one of: {supported}")
         return backend
+
+    @field_validator("vlm_prompt")
+    @classmethod
+    def normalize_vlm_prompt(cls, value: str) -> str:
+        # Compose env files may preserve the documented newline as literal \n.
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        return value.replace("\\n", "\n")
 
     @field_validator("vlm_backend")
     @classmethod

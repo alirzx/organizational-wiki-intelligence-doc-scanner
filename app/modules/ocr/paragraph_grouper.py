@@ -54,6 +54,7 @@ _PERSIAN_LIST_SEQUENCE = (
     "ه",
     "ی",
 )
+_LEGAL_LIST_SEQUENCE = ("الف", "ب", "ج", "د", "ه", "و", "ز", "ح", "ط", "ی", "ک", "ل", "م", "ن", "س", "ع", "ف", "ص", "ق", "ر", "ش", "ت", "ث", "خ", "ذ", "ض", "ظ", "غ")
 _ENGLISH_LIST_SEQUENCE = tuple(chr(code) for code in range(ord("A"), ord("Z") + 1))
 
 _PERSIAN_MARKER_ALIASES = (
@@ -160,12 +161,15 @@ def _markers_are_sequential(
     current_kind, current_marker, _, _ = current
     if previous_kind != current_kind:
         return False
-    previous_position = _sequence_position(previous_kind, previous_marker)
-    current_position = _sequence_position(current_kind, current_marker)
-    return (
-        previous_position is not None
-        and current_position is not None
-        and current_position == previous_position + 1
+    sequences = (
+        (_PERSIAN_LIST_SEQUENCE, _LEGAL_LIST_SEQUENCE)
+        if previous_kind == "fa" else (_ENGLISH_LIST_SEQUENCE,)
+    )
+    return any(
+        previous_marker in sequence
+        and current_marker in sequence
+        and sequence.index(current_marker) == sequence.index(previous_marker) + 1
+        for sequence in sequences
     )
 
 
@@ -315,7 +319,11 @@ def group_lines_into_paragraphs(
     if not lines:
         return []
 
-    ordered = sorted(lines, key=lambda line: (line.bbox.y1, line.bbox.x1))
+    ordered = (
+        sorted(lines, key=lambda line: line.reading_order)
+        if all(line.reading_order is not None for line in lines)
+        else sorted(lines, key=lambda line: (line.bbox.y1, line.bbox.x1))
+    )
     typical_height = max(1.0, median(max(1.0, line.bbox.height) for line in ordered))
     max_gap = typical_height * max_gap_ratio
     accepted_markers = _accepted_list_markers(ordered)

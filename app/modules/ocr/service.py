@@ -1,9 +1,13 @@
+from dataclasses import replace
 from time import perf_counter
 
 from app.core.blocking import BlockingPool, run_blocking
 from app.core.config import Settings
 from app.modules.ocr.adapter import lines_to_detected_objects
 from app.modules.ocr.backend import MockOCRBackend, create_ocr_backend
+from app.modules.ocr.deepseek_ocr_vlm_backend import DeepSeekOCRVLMBackend, VLMQualityError
+from app.modules.ocr.paddle_backend import PaddleOCRBackend
+from app.modules.ocr.text_normalization import normalize_persian_ocr_text
 from app.preprocessing.transforms import restore_bbox_to_source
 from app.preprocessing.types import PreparedPage
 from app.schemas.common import BBox
@@ -17,6 +21,42 @@ class OCRService:
     def __init__(self, settings: Settings):
         self.settings = settings
         self._backend = create_ocr_backend(settings)
+        self._fallback = None
+
+    def _predict(self, image):
+        primary = self._backend.metadata
+        try:
+            return self._backend.predict(image), primary, []
+        except VLMQualityError as exc:
+            if not isinstance(self._backend, DeepSeekOCRVLMBackend):
+                raise
+            warnings = [f"vlm_page_rejected: {exc}"]
+        if self.settings.vlm_region_fallback:
+            try:
+                lines = self._backend.predict_regions(image)
+                if sum(c.isalpha() for line in lines for c in line.text) < 40:
+                    raise VLMQualityError("Region OCR returned too little text to establish page coverage")
+                metadata = replace(primary, object_metadata={
+                    **primary.object_metadata, "ocr_recovery": "column_regions",
+                })
+                return lines, metadata, warnings + ["ocr_recovered_by_regions"]
+            except VLMQualityError as exc:
+                warnings.append(f"vlm_regions_rejected: {exc}")
+        if not self.settings.vlm_classic_fallback:
+            raise VLMQualityError("Page OCR and enabled region retries failed")
+        if self._fallback is None:
+            self._fallback = PaddleOCRBackend(self.settings)
+        lines = self._fallback.predict(image)
+        if not lines and self._fallback.last_detection_count:
+            raise VLMQualityError("Text regions were detected but neither OCR backend could read them")
+        lines = [replace(line, text=normalize_persian_ocr_text(line.text),
+                         raw_text=line.raw_text if line.raw_text is not None else line.text)
+                 for line in lines]
+        metadata = replace(self._fallback.metadata, object_metadata={
+            "text_extraction_mode": "ocr", "ocr_recovery": "paddle_fallback",
+            "primary_model_id": primary.model_id,
+        })
+        return lines, metadata, warnings + ["ocr_recovered_by_paddle"]
 
     def _mock_objects(self, page: PreparedPage) -> list[DetectedObject]:
         w, h = page.processed_image.size
@@ -50,14 +90,13 @@ class OCRService:
     async def run(self, page: PreparedPage, request_id: str) -> ModulePageResponse:
         started = perf_counter()
         backend_metadata = self._backend.metadata
+        warnings = []
 
         if isinstance(self._backend, MockOCRBackend):
             objects = self._mock_objects(page)
         else:
-            lines = await run_blocking(
-                BlockingPool.OCR,
-                self._backend.predict,
-                page.processed_image,
+            lines, backend_metadata, warnings = await run_blocking(
+                BlockingPool.OCR, self._predict, page.processed_image,
             )
             objects = lines_to_detected_objects(
                 lines,
@@ -73,7 +112,7 @@ class OCRService:
             duration_ms=duration,
             model_id=backend_metadata.model_id,
             backend=backend_metadata.backend,
-            warnings=[] if objects else ["no_text_detected"],
+            warnings=warnings + ([] if objects else ["no_text_detected"]),
         )
         return ModulePageResponse(
             schema_version=self.settings.schema_version,

@@ -138,6 +138,8 @@ def test_ollama_backend_posts_image_to_chat_endpoint(monkeypatch):
 
         def json(self):
             return {
+                "done": True,
+                "done_reason": "stop",
                 "message": {
                     "content": (
                         "<|ref|>متن<|/ref|>"
@@ -176,3 +178,122 @@ def test_ollama_backend_posts_image_to_chat_endpoint(monkeypatch):
     assert backend.metadata.object_metadata["confidence_available"] is False
     assert backend.metadata.object_metadata["confidence_semantics"] == "unavailable_sentinel_zero"
     assert backend.metadata.object_metadata["geometry_available"] == "response_dependent"
+
+
+@pytest.mark.parametrize("content", ["", "abcdefghij" * 200, r"\</imstart> <\|j||>"])
+def test_rejects_empty_or_looping_output(content):
+    with pytest.raises(RuntimeError):
+        parse_deepseek_output(content, image_width=100, image_height=100)
+
+
+def test_short_repeated_form_labels_are_preserved():
+    content = "نام و نام خانوادگی: ______\n" * 20
+    assert parse_deepseek_output(content, image_width=100, image_height=100)[0].text
+
+
+@pytest.mark.parametrize("bad_response", [
+    {"done": False, "message": {"content": "partial"}},
+    {"done": True, "done_reason": "length", "message": {"content": "partial"}},
+    {"done": True, "message": {"content": "abcdefghij" * 200}},
+    {"done": True, "message": {"content": ""}},
+])
+def test_invalid_generation_retries_fresh_image_once(monkeypatch, bad_response):
+    requests = []
+    responses = iter([bad_response, {"done": True, "message": {"content": "متن صحیح"}}])
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return next(responses)
+
+    def post(url, *, json, timeout):
+        requests.append(json)
+        return Response()
+
+    monkeypatch.setattr("app.modules.ocr.deepseek_ocr_vlm_backend.requests.post", post)
+    backend = DeepSeekOCRVLMBackend(Settings(_env_file=None))
+    assert backend.predict(Image.new("RGB", (100, 100)))[0].text == "متن صحیح"
+    assert len(requests) == 2
+    assert requests[0]["options"]["num_predict"] == 4096
+    assert requests[0]["options"]["num_ctx"] == 8192
+    assert requests[0]["options"]["repeat_penalty"] == 1.1
+    assert requests[0]["messages"][0]["content"] == "\nExtract the text in the image."
+    assert requests[1]["messages"][0]["content"] == "\nFree OCR."
+    assert len(requests[1]["messages"]) == 1
+    assert requests[0]["messages"][0]["images"] == requests[1]["messages"][0]["images"]
+
+
+def test_quality_retry_is_bounded(monkeypatch):
+    calls = []
+    backend = DeepSeekOCRVLMBackend(Settings(_env_file=None))
+
+    def request(image, *, prompt=None):
+        calls.append(prompt)
+        return "abcdefghij" * 200
+
+    monkeypatch.setattr(backend, "_request", request)
+    with pytest.raises(RuntimeError, match="repeated"):
+        backend.predict(Image.new("RGB", (100, 100)))
+    assert len(calls) == 2
+
+
+def test_compose_literal_newline_is_decoded():
+    assert Settings(_env_file=None, vlm_prompt=r"\nFree OCR.").vlm_prompt == "\nFree OCR."
+
+
+def test_malformed_production_header_is_removed():
+    content = "\\</imstart>\n<\\|u{>\nday\n---\n\nهیأت وزیران در جلسه"
+    assert parse_deepseek_output(content, image_width=100, image_height=200)[0].text == "هیأت وزیران در جلسه"
+
+
+def test_margin_crop_preserves_ink_and_removes_outer_frame():
+    from PIL import ImageDraw
+    from app.modules.ocr.deepseek_ocr_vlm_backend import crop_document_margins
+
+    image = Image.new("RGB", (400, 600), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((15, 15, 385, 585), outline="gray", width=2)
+    draw.rectangle((100, 100, 300, 200), fill="black")
+    cropped, x, y = crop_document_margins(image)
+    assert (x, y) == (76, 76)
+    assert cropped.size == (249, 149)
+    assert cropped.tobytes() == image.crop((76, 76, 325, 225)).tobytes()
+
+
+def test_cropped_grounding_coordinates_are_restored(monkeypatch):
+    from PIL import ImageDraw
+
+    image = Image.new("RGB", (400, 600), "white")
+    ImageDraw.Draw(image).rectangle((100, 100, 300, 200), fill="black")
+    backend = DeepSeekOCRVLMBackend(Settings(_env_file=None))
+    monkeypatch.setattr(backend, "_request", lambda image, **kwargs:
+        "<|ref|>متن<|/ref|><|det|>[[0, 0, 999, 999]]<|/det|>")
+    line = backend.predict(image)[0]
+    assert (line.bbox.x1, line.bbox.y1, line.bbox.x2, line.bbox.y2) == (76, 76, 325, 225)
+    assert line.polygon.points[0].x == 76
+    assert line.polygon.points[0].y == 76
+
+
+def test_dense_page_retains_full_page_context():
+    from PIL import ImageDraw
+    from app.modules.ocr.deepseek_ocr_vlm_backend import crop_document_margins
+
+    image = Image.new("RGB", (400, 600), "white")
+    ImageDraw.Draw(image).rectangle((30, 40, 370, 560), fill="black")
+    cropped, x, y = crop_document_margins(image)
+    assert cropped is image
+    assert (x, y) == (0, 0)
+
+
+@pytest.mark.parametrize("content", ["day\n[[1]]\nمتن", "متن\u200c" * 50])
+def test_damaged_order_or_residual_model_header_is_rejected(content):
+    with pytest.raises(RuntimeError, match="damaged"):
+        parse_deepseek_output(content, image_width=100, image_height=200)
+
+
+@pytest.mark.parametrize("content", ["1", r"\modifier>"])
+def test_page_number_only_or_malformed_artifact_is_rejected(content):
+    with pytest.raises(RuntimeError):
+        parse_deepseek_output(content, image_width=100, image_height=100)

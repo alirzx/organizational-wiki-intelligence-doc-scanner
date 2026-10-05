@@ -150,7 +150,9 @@ class ExtractionOrchestrator:
         # so a cached orchestrator may be reused across multiple event loops.
         # Keep the semaphore scoped to this document/run instead of the
         # process-local orchestrator instance.
-        page_semaphore = asyncio.Semaphore(self.settings.page_concurrency)
+        page_semaphore = asyncio.Semaphore(
+            1 if self.settings.text_extraction_mode == "vlm" else self.settings.page_concurrency
+        )
         page_runs = await asyncio.gather(
             *(
                 self._run_page(page, request_id, page_semaphore, ordered_modules)

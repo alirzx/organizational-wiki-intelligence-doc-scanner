@@ -10,6 +10,7 @@ class OCRLine:
     bbox: BBox
     polygon: Polygon | None = None
     raw_text: str | None = None
+    reading_order: int | None = None
 
 
 @dataclass(frozen=True)

@@ -51,6 +51,8 @@ def lines_to_detected_objects(
                 raw_text=paragraph.raw_text,
                 metadata={
                     "line_count": len(paragraph.lines),
+                    **({"ocr_reading_order": paragraph.lines[0].reading_order}
+                       if paragraph.lines[0].reading_order is not None else {}),
                     "line_confidences": [round(line.confidence, 6) for line in paragraph.lines],
                     **(
                         {

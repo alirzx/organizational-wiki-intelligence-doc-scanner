@@ -326,3 +326,24 @@ Start with [docs/README.md](docs/README.md).
 - [Canonical contracts](docs/contracts.md)
 - [Models and inference](docs/models.md)
 - [Deployment runbook](docs/deployment.md)
+
+
+### Recovery for difficult VLM pages
+
+Quality failures (empty, looping, damaged, or token-limited generations) use a
+bounded recovery sequence: full-page OCR, fresh full-page retry, three disjoint
+column regions in Persian reading order, then the configured Paddle detector and
+Arabic recognizer. Transport/configuration failures remain errors. Failed region
+OCR never publishes partial region text. The classic fallback accepts an empty
+page only when the detector found no text regions; detected but unreadable text
+still fails the page. Fallback warnings and actual model provenance are retained
+in each page's module result. Small chart/map labels can still need review.
+
+`WIKI_HAMI_VLM_REGION_FALLBACK` and `WIKI_HAMI_VLM_CLASSIC_FALLBACK` control these
+fallbacks. `WIKI_HAMI_VLM_DIAGNOSTICS_DIR` stores native model responses in the
+mounted output directory, including rejected generations; set it to an empty
+string to disable local retention. Each image/request combination overwrites its
+own diagnostic file on repeat requests. OCR pages run serially in VLM mode so
+waiting behind the single OCR executor does not consume other pages' module
+timeouts. Successful document artifacts are published only after every page
+has a valid result; an unreadable page is never silently omitted.

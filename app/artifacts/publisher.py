@@ -106,6 +106,9 @@ class ArtifactPublisher:
 
     @staticmethod
     def _reading_order_key(obj: dict) -> tuple:
+        order = (obj.get("metadata") or {}).get("ocr_reading_order")
+        if order is not None:
+            return (0.0, float(order), 0.0, 0.0, obj.get("type", ""), obj.get("object_id", ""))
         bbox = obj["bbox"]
         return (
             bbox["y1"],
@@ -182,7 +185,11 @@ class ArtifactPublisher:
                     "coordinate_space": image["source_coordinate_space"],
                     "image": image,
                     "transform": transform,
-                    "reading_order_method": "bbox_top_to_bottom_then_left_to_right",
+                    "reading_order_method": (
+                        "explicit_ocr_order_then_bbox" if any(
+                            "ocr_reading_order" in (obj.get("metadata") or {}) for obj in page_objects
+                        ) else "bbox_top_to_bottom_then_left_to_right"
+                    ),
                     "object_count": len(page_objects),
                     "object_counts": page_counts,
                     "objects": page_objects,
