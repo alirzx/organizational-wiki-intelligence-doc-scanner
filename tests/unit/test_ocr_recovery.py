@@ -59,6 +59,26 @@ def test_failed_regions_use_full_page_vlm_recovery(monkeypatch):
     assert "ocr_recovered_by_full_page_vlm" in warnings
 
 
+def test_artifact_only_region_output_is_rejected_and_full_page_recovers(monkeypatch):
+    s = service()
+    monkeypatch.setattr(
+        s._backend,
+        "predict_regions",
+        Mock(return_value=[line("</|im_start|> This image displays a blue sky with white clouds.", reading_order=0)]),
+    )
+    monkeypatch.setattr(
+        s._backend,
+        "predict",
+        Mock(return_value=[line("متن واقعی سند")]),
+    )
+
+    lines, metadata, warnings = s._predict(Image.new("RGB", (900, 600)))
+
+    assert [item.text for item in lines] == ["متن واقعی سند"]
+    assert metadata.object_metadata["ocr_strategy"] == "full_page_recovery"
+    assert any("model artifacts or image descriptions" in warning for warning in warnings)
+
+
 def test_failed_vlm_paths_use_classic_provenance(monkeypatch):
     s = service()
     monkeypatch.setattr(s._backend, "predict_regions", Mock(side_effect=VLMQualityError("region failed")))
