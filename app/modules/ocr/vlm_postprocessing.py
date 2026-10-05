@@ -125,8 +125,10 @@ _BARE_PIPE_TOKEN_RE = re.compile(
     rf"\\?\s*[|｜]\s*(?:{_CONTROL_TOKEN_ALT})\s*[|｜]\s*>?",
     re.IGNORECASE,
 )
+# Role wrappers arrive in several malformed forms: </assistant>, </|assistant>,
+# <|assistant|>, <|user>, etc. Accept optional pipes on both sides of the role name.
 _XML_ROLE_TOKEN_RE = re.compile(
-    rf"</?\s*(?:{_ROLE_ALT}|pdfmachine)\s*>",
+    rf"<\s*/?\s*[|｜]?\s*(?:{_ROLE_ALT}|pdfmachine)\s*[|｜]?\s*>",
     re.IGNORECASE,
 )
 _STANDALONE_ROLE_RE = re.compile(
