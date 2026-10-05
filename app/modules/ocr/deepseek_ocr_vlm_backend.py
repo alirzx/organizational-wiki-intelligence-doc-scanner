@@ -102,31 +102,51 @@ def crop_document_margins(image: Image.Image) -> tuple[Image.Image, int, int]:
     return image.crop((left, top, right, bottom)), left, top
 
 
-def column_regions(image: Image.Image) -> list[tuple[int, int, int, int]]:
-    """Choose disjoint column strips near the one-third cuts, in Persian reading order.
+def horizontal_regions(image: Image.Image) -> list[tuple[int, int, int, int]]:
+    """Split a page into three disjoint top-to-bottom OCR regions.
 
-    Gutter selection counts dark pixels in the page body so colored banners do
-    not dominate. Regions cover every pixel; no overlap can duplicate text.
+    Cuts are selected near the one-third positions at rows with minimal dark-pixel
+    density. This preserves Persian/legal document reading flow and avoids the old
+    left/right column split that could slice one sentence into unrelated fragments.
+    Regions cover every pixel exactly once and are always returned top to bottom.
     """
     import numpy as np
 
     width, height = image.size
-    if width < 192:
-        raise VLMQualityError("Image is too small for region OCR")
+    if height < 192:
+        raise VLMQualityError("Image is too small for three-region OCR")
+
     gray = np.asarray(image.convert("L"))
-    body = gray[height // 8:height * 7 // 8]
-    ink = (body < 160).sum(axis=0)
+    # Ignore a thin strip at both side edges so page borders do not dominate the
+    # horizontal cut search. The source pixels themselves are never modified.
+    left = min(width // 12, max(0, width // 4))
+    right = max(left + 1, width - left)
+    body = gray[:, left:right]
+    ink = (body < 160).sum(axis=1)
+
     cuts = [0]
     for fraction in (1 / 3, 2 / 3):
-        center = int(width * fraction)
-        radius = max(1, width // 20)
-        start, end = center - radius, center + radius
-        minimum = ink[start:end].min()
-        candidates = np.flatnonzero(ink[start:end] == minimum) + start
-        cut = int(min(candidates, key=lambda x: abs(x - center)))
+        center = int(height * fraction)
+        radius = max(1, height // 20)
+        start = max(cuts[-1] + 1, center - radius)
+        end = min(height - 1, center + radius)
+        if end <= start:
+            cut = center
+        else:
+            window = ink[start:end]
+            minimum = window.min()
+            candidates = np.flatnonzero(window == minimum) + start
+            cut = int(min(candidates, key=lambda y: abs(y - center)))
+        cut = min(height - 1, max(cuts[-1] + 1, cut))
         cuts.append(cut)
-    cuts.append(width)
-    return [(cuts[i], 0, cuts[i + 1], height) for i in (2, 1, 0)]
+    cuts.append(height)
+
+    return [(0, cuts[i], width, cuts[i + 1]) for i in range(3)]
+
+
+def column_regions(image: Image.Image) -> list[tuple[int, int, int, int]]:
+    """Backward-compatible alias for the top-to-bottom region splitter."""
+    return horizontal_regions(image)
 
 
 def translate_lines(lines: list[OCRLine], x: int, y: int) -> list[OCRLine]:
@@ -267,7 +287,8 @@ def parse_deepseek_grounding_output(
     if not lines:
         raise RuntimeError("DeepSeek-OCR grounding response contained no text spans")
     validate_vlm_text("\n".join(line.text for line in lines))
-    return sorted(lines, key=lambda line: (line.bbox.y1, -line.bbox.x1))
+    ordered = sorted(lines, key=lambda line: (line.bbox.y1, -line.bbox.x1))
+    return [replace(line, reading_order=index) for index, line in enumerate(ordered)]
 
 
 def parse_deepseek_output(
@@ -304,6 +325,7 @@ def parse_deepseek_output(
             confidence=0.0,
             bbox=BBox(x1=0.0, y1=0.0, x2=float(image_width), y2=float(image_height)),
             polygon=None,
+            reading_order=0,
         )
     ]
 
@@ -418,17 +440,25 @@ class DeepSeekOCRVLMBackend:
                 logger.warning("Rejected VLM OCR; retrying fresh image request: %s", exc)
         raise AssertionError("unreachable")
 
-
     def predict_regions(self, image: Image.Image) -> list[OCRLine]:
-        """Retry bounded, independent regions; never return a partially read page."""
+        """Recover a difficult page using three independent top-to-bottom regions."""
+        offset_x = offset_y = 0
+        if self.settings.vlm_crop_margins:
+            image, offset_x, offset_y = crop_document_margins(image)
+
         output: list[OCRLine] = []
-        for box in column_regions(image):
+        for box in horizontal_regions(image):
             region = image.crop(box)
             content = self._request(region, prompt="\nExtract the text in the image.")
             lines = parse_deepseek_output(
                 content, image_width=region.width, image_height=region.height,
             )
-            for line in translate_lines(lines, box[0], box[1]):
+            translated = translate_lines(
+                lines,
+                box[0] + offset_x,
+                box[1] + offset_y,
+            )
+            for line in translated:
                 output.append(replace(line, reading_order=len(output)))
         validate_vlm_text("\n".join(line.text for line in output))
         return output

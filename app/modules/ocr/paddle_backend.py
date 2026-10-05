@@ -6,6 +6,7 @@ canonical schema and source-image coordinates is handled by adapter.py.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from threading import Lock
 from typing import Any
 
@@ -149,4 +150,8 @@ class PaddleOCRBackend:
                     )
                 )
 
-        return sorted(lines, key=lambda line: (line.bbox.y1, line.bbox.x1))
+        # Persian documents read top-to-bottom; when lines share a row, prefer the
+        # rightmost box first. Persist the resulting page-local order so paragraph
+        # grouping and OCR text artifacts use the same deterministic sequence.
+        ordered = sorted(lines, key=lambda line: (line.bbox.y1, -line.bbox.x1, line.bbox.y2))
+        return [replace(line, reading_order=index) for index, line in enumerate(ordered)]

@@ -25,35 +25,58 @@ class OCRService:
 
     def _predict(self, image):
         primary = self._backend.metadata
-        try:
+        if not isinstance(self._backend, DeepSeekOCRVLMBackend):
             return self._backend.predict(image), primary, []
-        except VLMQualityError as exc:
-            if not isinstance(self._backend, DeepSeekOCRVLMBackend):
-                raise
-            warnings = [f"vlm_page_rejected: {exc}"]
+
+        warnings: list[str] = []
+
+        # Persian/legal documents are read top-to-bottom. Use three horizontal
+        # regions as the primary VLM strategy so dense pages cannot silently lose
+        # their tail at the model generation limit and so each accepted block has
+        # meaningful page geometry for layout.json.
         if self.settings.vlm_region_fallback:
             try:
                 lines = self._backend.predict_regions(image)
-                if sum(c.isalpha() for line in lines for c in line.text) < 40:
-                    raise VLMQualityError("Region OCR returned too little text to establish page coverage")
                 metadata = replace(primary, object_metadata={
-                    **primary.object_metadata, "ocr_recovery": "column_regions",
+                    **primary.object_metadata,
+                    "ocr_strategy": "top_to_bottom_regions",
                 })
-                return lines, metadata, warnings + ["ocr_recovered_by_regions"]
+                return lines, metadata, warnings
             except VLMQualityError as exc:
                 warnings.append(f"vlm_regions_rejected: {exc}")
+
+        # Keep the bounded whole-page path as a secondary recovery strategy. It
+        # remains useful for sparse pages and preserves the previous behavior when
+        # region OCR is explicitly disabled.
+        try:
+            lines = self._backend.predict(image)
+            metadata = replace(primary, object_metadata={
+                **primary.object_metadata,
+                "ocr_strategy": "full_page_recovery",
+            })
+            return lines, metadata, warnings + ["ocr_recovered_by_full_page_vlm"]
+        except VLMQualityError as exc:
+            warnings.append(f"vlm_page_rejected: {exc}")
+
         if not self.settings.vlm_classic_fallback:
-            raise VLMQualityError("Page OCR and enabled region retries failed")
+            raise VLMQualityError("Top-to-bottom region OCR and whole-page VLM OCR failed")
+
         if self._fallback is None:
             self._fallback = PaddleOCRBackend(self.settings)
         lines = self._fallback.predict(image)
         if not lines and self._fallback.last_detection_count:
             raise VLMQualityError("Text regions were detected but neither OCR backend could read them")
-        lines = [replace(line, text=normalize_persian_ocr_text(line.text),
-                         raw_text=line.raw_text if line.raw_text is not None else line.text)
-                 for line in lines]
+        lines = [
+            replace(
+                line,
+                text=normalize_persian_ocr_text(line.text),
+                raw_text=line.raw_text if line.raw_text is not None else line.text,
+            )
+            for line in lines
+        ]
         metadata = replace(self._fallback.metadata, object_metadata={
-            "text_extraction_mode": "ocr", "ocr_recovery": "paddle_fallback",
+            "text_extraction_mode": "ocr",
+            "ocr_strategy": "paddle_fallback",
             "primary_model_id": primary.model_id,
         })
         return lines, metadata, warnings + ["ocr_recovered_by_paddle"]
@@ -96,7 +119,9 @@ class OCRService:
             objects = self._mock_objects(page)
         else:
             lines, backend_metadata, warnings = await run_blocking(
-                BlockingPool.OCR, self._predict, page.processed_image,
+                BlockingPool.OCR,
+                self._predict,
+                page.processed_image,
             )
             objects = lines_to_detected_objects(
                 lines,

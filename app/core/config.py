@@ -86,11 +86,16 @@ class Settings(BaseSettings):
     vlm_timeout_seconds: float = 360.0
     vlm_prompt: str = "\nExtract the text in the image."
     vlm_crop_margins: bool = True
+    # Kept under the existing environment name for deployment compatibility.
+    # When enabled, VLM extraction uses three top-to-bottom page regions first.
     vlm_region_fallback: bool = True
     vlm_classic_fallback: bool = True
     vlm_diagnostics_dir: str = "data/outputs/ocr-diagnostics"
-    vlm_max_tokens: int = Field(default=4096, ge=1, le=65536)
-    vlm_context_size: int = Field(default=8192, ge=512)
+    # The Ollama deepseek-ocr:latest model has an 8192-token model context.
+    # Increase generation headroom inside that supported context, while horizontal
+    # region OCR remains the primary protection against dense-page truncation.
+    vlm_max_tokens: int = Field(default=6144, ge=1, le=8192)
+    vlm_context_size: int = Field(default=8192, ge=512, le=8192)
     vlm_repeat_penalty: float = Field(default=1.1, ge=1.0, le=2.0)
     vlm_quality_retries: int = Field(default=1, ge=0, le=2)
 

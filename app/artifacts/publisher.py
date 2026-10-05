@@ -53,11 +53,20 @@ class ArtifactPublisher:
         return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=False) + "\n"
 
     @staticmethod
-    def _ocr_plain_text(objects: list[DetectedObject]) -> str:
+    def _ocr_object_order_key(obj: DetectedObject) -> tuple:
+        explicit = (obj.metadata or {}).get("ocr_reading_order")
+        if explicit is not None:
+            return (0, float(explicit), obj.bbox.y1, -obj.bbox.x1, obj.object_id)
+        return (1, obj.bbox.y1, -obj.bbox.x1, obj.bbox.y2, obj.object_id)
+
+    @classmethod
+    def _ocr_plain_text(cls, objects: list[DetectedObject]) -> str:
         # ``text`` is canonical logical-order OCR text. ``raw_text`` stays in JSON for
         # exact model traceability and must never be preferred for human/product text.
+        # Sort here as a final persistence guard: page text and aggregate OCR.txt must
+        # remain deterministic even if an upstream backend returns objects out of order.
         paragraphs: list[str] = []
-        for obj in objects:
+        for obj in sorted(objects, key=cls._ocr_object_order_key):
             if obj.type != ObjectType.PARAGRAPH:
                 continue
             value = obj.text if obj.text is not None else obj.raw_text
@@ -106,9 +115,9 @@ class ArtifactPublisher:
 
     @staticmethod
     def _reading_order_key(obj: dict) -> tuple:
-        order = (obj.get("metadata") or {}).get("ocr_reading_order")
-        if order is not None:
-            return (0.0, float(order), 0.0, 0.0, obj.get("type", ""), obj.get("object_id", ""))
+        # Unified layout ordering stays geometry-authoritative, exactly as layout.v2
+        # originally defined. OCR-internal region order is retained in metadata but must
+        # not pull text ahead of figures/tables/stamps that physically precede it.
         bbox = obj["bbox"]
         return (
             bbox["y1"],
@@ -185,11 +194,7 @@ class ArtifactPublisher:
                     "coordinate_space": image["source_coordinate_space"],
                     "image": image,
                     "transform": transform,
-                    "reading_order_method": (
-                        "explicit_ocr_order_then_bbox" if any(
-                            "ocr_reading_order" in (obj.get("metadata") or {}) for obj in page_objects
-                        ) else "bbox_top_to_bottom_then_left_to_right"
-                    ),
+                    "reading_order_method": "bbox_top_to_bottom_then_left_to_right",
                     "object_count": len(page_objects),
                     "object_counts": page_counts,
                     "objects": page_objects,
@@ -217,7 +222,9 @@ class ArtifactPublisher:
         written: list[str] = []
         aggregate_ocr_pages: list[str] = []
 
-        for page_run in run.pages:
+        # Keep persistence deterministic even if a caller constructs DocumentRunResult
+        # manually. This does not change object keys or any public artifact schema.
+        for page_run in sorted(run.pages, key=lambda item: item.response.page_number):
             page_number = page_run.response.page_number
             page_token = f"page-{page_number:03d}"
 

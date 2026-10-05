@@ -9,6 +9,7 @@ from app.core.config import Settings
 from app.modules.ocr.backend import create_ocr_backend
 from app.modules.ocr.deepseek_ocr_vlm_backend import (
     DeepSeekOCRVLMBackend,
+    horizontal_regions,
     parse_deepseek_grounding_output,
     parse_deepseek_output,
 )
@@ -25,6 +26,8 @@ def test_vlm_defaults_can_be_selected_explicitly():
     assert settings.text_extraction_mode == "vlm"
     assert settings.vlm_backend == "ollama"
     assert settings.vlm_model_id == "deepseek-ocr:latest"
+    assert settings.vlm_max_tokens == 6144
+    assert settings.vlm_context_size == 8192
 
 
 def test_factory_can_switch_between_vlm_and_classic_ocr():
@@ -57,6 +60,7 @@ def test_grounding_parser_maps_coordinates_and_normalizes_persian():
     )
 
     assert [line.text for line in lines] == ["سلام دنیا", "OpenAI-123"]
+    assert [line.reading_order for line in lines] == [0, 1]
     assert lines[0].raw_text == "سلام دنيا"
     assert lines[0].confidence == 0.0
     assert lines[0].bbox.x1 == pytest.approx(100 / 999 * 1000)
@@ -91,6 +95,7 @@ def test_plain_text_output_uses_full_page_fallback_and_cleans_model_prefix():
     assert lines[0].bbox.x2 == 880
     assert lines[0].bbox.y2 == 1251
     assert lines[0].polygon is None
+    assert lines[0].reading_order == 0
 
 
 def test_plain_text_output_cleans_production_tokenizer_artifacts():
@@ -129,6 +134,11 @@ def test_plain_text_output_reduces_markdown_to_canonical_plain_text():
     assert "**" not in lines[0].text
 
 
+def test_horizontal_regions_cover_page_top_to_bottom():
+    boxes = horizontal_regions(Image.new("RGB", (900, 600), "white"))
+    assert boxes == [(0, 0, 900, 200), (0, 200, 900, 400), (0, 400, 900, 600)]
+
+
 def test_ollama_backend_posts_image_to_chat_endpoint(monkeypatch):
     captured = {}
 
@@ -145,7 +155,7 @@ def test_ollama_backend_posts_image_to_chat_endpoint(monkeypatch):
                         "<|ref|>متن<|/ref|>"
                         "<|det|>[[100, 100, 800, 200]]<|/det|>"
                     )
-                }
+                },
             }
 
     def fake_post(url, *, json, timeout):
@@ -163,6 +173,7 @@ def test_ollama_backend_posts_image_to_chat_endpoint(monkeypatch):
         vlm_base_url="http://ollama.test:11434/",
         vlm_timeout_seconds=123,
         vlm_prompt="<|grounding|>OCR this image.",
+        vlm_crop_margins=False,
     )
     backend = DeepSeekOCRVLMBackend(settings)
     lines = backend.predict(Image.new("RGB", (320, 200), "white"))
@@ -172,6 +183,8 @@ def test_ollama_backend_posts_image_to_chat_endpoint(monkeypatch):
     assert captured["json"]["model"] == "deepseek-ocr:latest"
     assert captured["json"]["stream"] is False
     assert captured["json"]["messages"][0]["content"] == "<|grounding|>OCR this image."
+    assert captured["json"]["options"]["num_predict"] == 6144
+    assert captured["json"]["options"]["num_ctx"] == 8192
     encoded = captured["json"]["messages"][0]["images"][0]
     assert base64.b64decode(encoded).startswith(b"\x89PNG")
     assert [line.text for line in lines] == ["متن"]
@@ -213,10 +226,10 @@ def test_invalid_generation_retries_fresh_image_once(monkeypatch, bad_response):
         return Response()
 
     monkeypatch.setattr("app.modules.ocr.deepseek_ocr_vlm_backend.requests.post", post)
-    backend = DeepSeekOCRVLMBackend(Settings(_env_file=None))
+    backend = DeepSeekOCRVLMBackend(Settings(_env_file=None, vlm_crop_margins=False))
     assert backend.predict(Image.new("RGB", (100, 100)))[0].text == "متن صحیح"
     assert len(requests) == 2
-    assert requests[0]["options"]["num_predict"] == 4096
+    assert requests[0]["options"]["num_predict"] == 6144
     assert requests[0]["options"]["num_ctx"] == 8192
     assert requests[0]["options"]["repeat_penalty"] == 1.1
     assert requests[0]["messages"][0]["content"] == "\nExtract the text in the image."
@@ -227,7 +240,7 @@ def test_invalid_generation_retries_fresh_image_once(monkeypatch, bad_response):
 
 def test_quality_retry_is_bounded(monkeypatch):
     calls = []
-    backend = DeepSeekOCRVLMBackend(Settings(_env_file=None))
+    backend = DeepSeekOCRVLMBackend(Settings(_env_file=None, vlm_crop_margins=False))
 
     def request(image, *, prompt=None):
         calls.append(prompt)
@@ -241,6 +254,11 @@ def test_quality_retry_is_bounded(monkeypatch):
 
 def test_compose_literal_newline_is_decoded():
     assert Settings(_env_file=None, vlm_prompt=r"\nFree OCR.").vlm_prompt == "\nFree OCR."
+
+
+def test_context_limit_cannot_exceed_model_capacity():
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, vlm_context_size=16384)
 
 
 def test_malformed_production_header_is_removed():
@@ -268,8 +286,11 @@ def test_cropped_grounding_coordinates_are_restored(monkeypatch):
     image = Image.new("RGB", (400, 600), "white")
     ImageDraw.Draw(image).rectangle((100, 100, 300, 200), fill="black")
     backend = DeepSeekOCRVLMBackend(Settings(_env_file=None))
-    monkeypatch.setattr(backend, "_request", lambda image, **kwargs:
-        "<|ref|>متن<|/ref|><|det|>[[0, 0, 999, 999]]<|/det|>")
+    monkeypatch.setattr(
+        backend,
+        "_request",
+        lambda image, **kwargs: "<|ref|>متن<|/ref|><|det|>[[0, 0, 999, 999]]<|/det|>",
+    )
     line = backend.predict(image)[0]
     assert (line.bbox.x1, line.bbox.y1, line.bbox.x2, line.bbox.y2) == (76, 76, 325, 225)
     assert line.polygon.points[0].x == 76
