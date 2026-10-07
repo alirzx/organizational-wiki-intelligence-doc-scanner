@@ -4,28 +4,38 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_container_profiles_persist_the_actual_paddlex_cache():
+def test_compose_persists_framework_and_ollama_caches():
     dockerfile = (ROOT / "Dockerfile").read_text()
-    local_compose = (ROOT / "compose.yaml").read_text()
-    prod_compose = (ROOT / "deployment/compose.prod.yaml").read_text()
+    compose = (ROOT / "compose.yaml").read_text()
 
     assert "PADDLE_PDX_CACHE_HOME=/app/.cache/paddlex" in dockerfile
-    assert "PADDLE_PDX_CACHE_HOME: /app/.cache/paddlex" in local_compose
-    assert "wiki_hami_model_cache:/app/.cache" in local_compose
-    assert "PADDLE_PDX_CACHE_HOME: /var/lib/wiki-hami/cache/paddlex" in prod_compose
-    assert "/cache:/var/lib/wiki-hami/cache" in prod_compose
+    assert "PADDLE_PDX_CACHE_HOME: /app/.cache/paddlex" in compose
+    assert "wiki_hami_model_cache:/app/.cache" in compose
+    assert "wiki_hami_ollama_models:/root/.ollama" in compose
+    assert "OLLAMA_MODELS: /root/.ollama/models" in compose
 
 
-def test_gpu_image_profile_is_explicit_and_cpu_override_removes_reservations():
+def test_docker_image_supports_explicit_cpu_and_gpu_dependency_profiles():
     dockerfile = (ROOT / "Dockerfile").read_text()
-    local_compose = (ROOT / "compose.yaml").read_text()
-    prod_compose = (ROOT / "deployment/compose.prod.yaml").read_text()
-    cpu_override = (ROOT / "compose.cpu.yaml").read_text()
+    compose = (ROOT / "compose.yaml").read_text()
 
     assert "ARG MODEL_RUNTIME=gpu" in dockerfile
+    assert "requirements-paddle-cpu.txt" in dockerfile
     assert "requirements-paddle-gpu.txt" in dockerfile
+    assert "requirements-torch-cpu.txt" in dockerfile
     assert "requirements-torch-gpu.txt" in dockerfile
-    assert "PADDLE_GPU_INDEX_URL is required" in dockerfile
-    assert local_compose.count("capabilities: [gpu]") == 2
-    assert prod_compose.count("capabilities: [gpu]") == 2
-    assert cpu_override.count("devices: !reset []") == 2
+    assert 'MODEL_RUNTIME: "${WIKI_HAMI_MODEL_RUNTIME:-gpu}"' in compose
+    assert 'runtime: "${WIKI_HAMI_CONTAINER_RUNTIME:-nvidia}"' in compose
+
+
+def test_compose_owns_ollama_and_pulls_only_selected_model_when_needed():
+    compose = (ROOT / "compose.yaml").read_text()
+
+    assert "ollama:" in compose
+    assert "ollama-model-init:" in compose
+    assert "http://ollama:11434" in compose
+    assert 'OLLAMA_MODEL: "${WIKI_HAMI_VLM_MODEL_ID:-deepseek-ocr:latest}"' in compose
+    assert 'if ollama show "$$OLLAMA_MODEL"' in compose
+    assert 'ollama pull "$$OLLAMA_MODEL"' in compose
+    assert 'if [ "$$TEXT_EXTRACTION_MODE" != "vlm" ]' in compose
+    assert "service_completed_successfully" in compose

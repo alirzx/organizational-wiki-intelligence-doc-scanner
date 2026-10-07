@@ -1,9 +1,10 @@
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+SUPPORTED_MODEL_RUNTIMES = frozenset({"cpu", "gpu"})
 SUPPORTED_TEXT_EXTRACTION_MODES = frozenset({"ocr", "vlm"})
 SUPPORTED_OCR_BACKENDS = frozenset({"mock", "paddle", "bina_rizeh"})
 SUPPORTED_VLM_BACKENDS = frozenset({"ollama"})
@@ -15,6 +16,7 @@ class Settings(BaseSettings):
     schema_version: str = "wiki-hami.extraction.v1"
     environment: str = "local"
     log_level: str = "INFO"
+    model_runtime: str = "gpu"  # cpu | gpu; scanner Paddle/Torch dependency profile
 
     max_upload_bytes: int = 25 * 1024 * 1024
     max_image_pixels: int = 50_000_000
@@ -78,8 +80,8 @@ class Settings(BaseSettings):
     ocr_paragraph_max_gap_ratio: float = 1.8
     ocr_paragraph_min_x_overlap: float = 0.15
 
-    # VLM path. DeepSeek-OCR is served remotely by Ollama so the Wiki Hami
-    # application does not load another local GPU model when this mode is active.
+    # VLM path. Docker Compose owns an isolated Ollama service by default; direct
+    # local processes may point this URL at any explicitly configured Ollama endpoint.
     vlm_backend: str = "ollama"
     vlm_model_id: str = "deepseek-ocr:latest"
     vlm_base_url: str = "http://localhost:11434"
@@ -133,6 +135,15 @@ class Settings(BaseSettings):
     def table_label_set(self) -> set[str]:
         return {value.strip().lower() for value in self.table_labels.split(",") if value.strip()}
 
+    @field_validator("model_runtime")
+    @classmethod
+    def validate_model_runtime(cls, value: str) -> str:
+        runtime = value.strip().lower()
+        if runtime not in SUPPORTED_MODEL_RUNTIMES:
+            supported = ", ".join(sorted(SUPPORTED_MODEL_RUNTIMES))
+            raise ValueError(f"model_runtime must be one of: {supported}")
+        return runtime
+
     @field_validator("text_extraction_mode")
     @classmethod
     def validate_text_extraction_mode(cls, value: str) -> str:
@@ -175,6 +186,38 @@ class Settings(BaseSettings):
         if not normalized.startswith(("http://", "https://")):
             raise ValueError("vlm_base_url must start with http:// or https://")
         return normalized
+
+
+    @model_validator(mode="after")
+    def validate_cpu_runtime_devices(self) -> "Settings":
+        if self.model_runtime != "cpu":
+            return self
+
+        conflicts: list[str] = []
+        if (
+            self.text_extraction_mode == "ocr"
+            and self.ocr_backend != "mock"
+            and self.ocr_device.strip().lower() != "cpu"
+        ):
+            conflicts.append("WIKI_HAMI_OCR_DEVICE")
+        if (
+            self.figure_table_backend != "mock"
+            and self.figure_table_device.strip().lower() != "cpu"
+        ):
+            conflicts.append("WIKI_HAMI_FIGURE_TABLE_DEVICE")
+        if (
+            self.stamp_signature_backend != "mock"
+            and self.stamp_signature_device.strip().lower() != "cpu"
+        ):
+            conflicts.append("WIKI_HAMI_STAMP_SIGNATURE_DEVICE")
+
+        if conflicts:
+            names = ", ".join(conflicts)
+            raise ValueError(
+                "WIKI_HAMI_MODEL_RUNTIME=cpu requires active in-process model devices "
+                f"to be cpu; update: {names}"
+            )
+        return self
 
 
 @lru_cache

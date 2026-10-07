@@ -1,15 +1,75 @@
+x-scanner-environment: &scanner-environment
+  HF_HOME: /app/.cache/huggingface
+  PADDLE_HOME: /app/.cache/paddle
+  PADDLE_PDX_CACHE_HOME: /app/.cache/paddlex
+  PADDLE_PDX_MODEL_SOURCE: HUGGINGFACE
+  NVIDIA_VISIBLE_DEVICES: "${WIKI_HAMI_NVIDIA_VISIBLE_DEVICES:-all}"
+  WIKI_HAMI_VLM_BASE_URL: "${WIKI_HAMI_VLM_BASE_URL:-http://ollama:11434}"
+
 services:
-  api:
-    build:
-      context: .
-    image: wiki-hami-extraction:0.2.0
+  ollama:
+    image: "${WIKI_HAMI_OLLAMA_IMAGE:-ollama/ollama:0.40.0}"
+    runtime: "${WIKI_HAMI_OLLAMA_CONTAINER_RUNTIME:-nvidia}"
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_MODELS: /root/.ollama/models
+      OLLAMA_KEEP_ALIVE: "${WIKI_HAMI_OLLAMA_KEEP_ALIVE:-5m}"
+      OLLAMA_MAX_LOADED_MODELS: "${WIKI_HAMI_OLLAMA_MAX_LOADED_MODELS:-1}"
+      NVIDIA_VISIBLE_DEVICES: "${WIKI_HAMI_OLLAMA_NVIDIA_VISIBLE_DEVICES:-all}"
+    volumes:
+      - wiki_hami_ollama_models:/root/.ollama
+    expose:
+      - "11434"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "OLLAMA_HOST=http://127.0.0.1:11434 ollama list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - wikio
+
+  ollama-model-init:
+    image: "${WIKI_HAMI_OLLAMA_IMAGE:-ollama/ollama:0.40.0}"
     env_file:
       - .env
     environment:
-      HF_HOME: /app/.cache/huggingface
-      PADDLE_HOME: /app/.cache/paddle
-      PADDLE_PDX_CACHE_HOME: /app/.cache/paddlex
-      PADDLE_PDX_MODEL_SOURCE: HUGGINGFACE
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: "${WIKI_HAMI_VLM_MODEL_ID:-deepseek-ocr:latest}"
+      TEXT_EXTRACTION_MODE: "${WIKI_HAMI_TEXT_EXTRACTION_MODE:-vlm}"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        if [ "$$TEXT_EXTRACTION_MODE" != "vlm" ]; then
+          echo "Classic OCR selected; skipping Ollama model pull."
+          exit 0
+        fi
+        if ollama show "$$OLLAMA_MODEL" >/dev/null 2>&1; then
+          echo "Ollama model $$OLLAMA_MODEL already exists in the persistent project volume."
+        else
+          echo "Pulling Ollama model $$OLLAMA_MODEL ..."
+          ollama pull "$$OLLAMA_MODEL"
+        fi
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - wikio
+
+  api:
+    build:
+      context: .
+      args:
+        MODEL_RUNTIME: "${WIKI_HAMI_MODEL_RUNTIME:-gpu}"
+    image: wiki-hami-extraction:0.2.0
+    runtime: "${WIKI_HAMI_CONTAINER_RUNTIME:-nvidia}"
+    env_file:
+      - .env
+    environment:
+      <<: *scanner-environment
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
@@ -17,13 +77,9 @@ services:
       - wiki_hami_model_cache:/app/.cache
       - ./data/outputs:/app/data/outputs
     shm_size: "2gb"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    depends_on:
+      ollama-model-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/v1/health"]
@@ -36,25 +92,19 @@ services:
 
   worker:
     image: wiki-hami-extraction:0.2.0
+    runtime: "${WIKI_HAMI_CONTAINER_RUNTIME:-nvidia}"
     env_file:
       - .env
     environment:
-      HF_HOME: /app/.cache/huggingface
-      PADDLE_HOME: /app/.cache/paddle
-      PADDLE_PDX_CACHE_HOME: /app/.cache/paddlex
-      PADDLE_PDX_MODEL_SOURCE: HUGGINGFACE
+      <<: *scanner-environment
     command: python run.py --worker
     volumes:
       - wiki_hami_model_cache:/app/.cache
       - ./data/outputs:/app/data/outputs
     shm_size: "2gb"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    depends_on:
+      ollama-model-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.jobs.celery_app:celery_app inspect ping -d celery@$$HOSTNAME --timeout=5 2>/dev/null | grep -q pong"]
@@ -85,6 +135,7 @@ services:
 
 volumes:
   wiki_hami_model_cache:
+  wiki_hami_ollama_models:
 
 networks:
   wikio:

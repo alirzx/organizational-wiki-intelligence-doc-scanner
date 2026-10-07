@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+ARG MODEL_RUNTIME=gpu
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -18,17 +20,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt requirements-models.txt \
-    requirements-paddle-gpu.txt requirements-torch-gpu.txt ./
+    requirements-paddle-cpu.txt requirements-paddle-gpu.txt \
+    requirements-torch-cpu.txt requirements-torch-gpu.txt ./
 
-# Production is GPU-only. These CUDA wheel channels match the runtime that was
-# validated for Wiki Hami: PaddlePaddle 3.2.2 on CUDA 12.9 and PyTorch 2.14.0 /
-# torchvision 0.29.0 on CUDA 13.0. Keeping the indexes here makes CI builds
-# deterministic instead of depending on empty deployment-time build arguments.
-RUN python -m pip install --upgrade pip && \
-    python -m pip install -r requirements-paddle-gpu.txt \
-      --index-url https://www.paddlepaddle.org.cn/packages/stable/cu129/ && \
-    python -m pip install -r requirements-torch-gpu.txt \
-      --index-url https://download.pytorch.org/whl/cu130 && \
+RUN set -eux; \
+    python -m pip install --upgrade pip; \
+    case "$MODEL_RUNTIME" in \
+      gpu) \
+        python -m pip install -r requirements-paddle-gpu.txt \
+          --index-url https://www.paddlepaddle.org.cn/packages/stable/cu129/; \
+        python -m pip install -r requirements-torch-gpu.txt \
+          --index-url https://download.pytorch.org/whl/cu130; \
+        ;; \
+      cpu) \
+        python -m pip install -r requirements-paddle-cpu.txt \
+          --index-url https://www.paddlepaddle.org.cn/packages/stable/cpu/; \
+        python -m pip install -r requirements-torch-cpu.txt \
+          --index-url https://download.pytorch.org/whl/cpu; \
+        ;; \
+      *) \
+        echo "Unsupported MODEL_RUNTIME=$MODEL_RUNTIME; expected cpu or gpu" >&2; \
+        exit 2; \
+        ;; \
+    esac; \
     python -m pip install -r requirements-models.txt
 
 COPY . .

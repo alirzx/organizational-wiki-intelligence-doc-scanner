@@ -202,20 +202,15 @@ python -m pip install -r requirements-dev.txt
 cp .env.example .env
 ```
 
-For real CPU models:
+Install model dependencies with an explicit runtime profile:
 
 ```bash
-python -m pip install -r requirements-paddle-cpu.txt \
-  -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
-python -m pip install -r requirements-torch-cpu.txt \
-  --index-url https://download.pytorch.org/whl/cpu
-python -m pip install -r requirements-models.txt
+make install-models MODEL_RUNTIME=cpu
+# or
+make install-models MODEL_RUNTIME=gpu
 ```
 
-For GPU models, set `PADDLE_GPU_INDEX_URL` and `TORCH_GPU_INDEX_URL` to the
-official package indexes verified for the target CUDA/driver combination, then
-run `make install-models-gpu`. The repository intentionally does not guess a
-CUDA wheel index.
+The Docker build uses the same `WIKI_HAMI_MODEL_RUNTIME=cpu|gpu` selection.
 
 Local processes:
 
@@ -281,18 +276,19 @@ Never commit real credentials.
 
 ## Docker / deployment
 
-The application image is shared by API, worker, and optional UI. The Compose project uses the external `wikio` network and a persistent model cache.
+API, worker, and optional UI share one scanner image. Root Compose also owns an
+isolated Ollama service and persistent model volume. In VLM mode the configured
+model is pulled only when absent; classic Paddle/Bina mode skips the model pull.
 
 ```bash
-# CPU build (portable fallback; set the three model device settings to cpu)
-WIKI_HAMI_MODEL_RUNTIME=cpu docker compose \
-  -f compose.yaml -f compose.cpu.yaml up -d --build
-
-# GPU build requires verified official wheel indexes in .env
+docker compose config
 docker compose up -d --build
 docker compose ps
-docker compose logs --tail=100 worker
+docker compose logs --tail=100 worker ollama-model-init
 ```
+
+CPU/GPU dependency profile, container runtime, per-module devices, and Ollama
+runtime are configured through `.env`.
 
 The worker is required in production; without it, requests are accepted but remain queued. Current worker concurrency is intentionally `1` because model instances are process-local and memory-heavy.
 
@@ -330,14 +326,12 @@ Start with [docs/README.md](docs/README.md).
 
 ### Recovery for difficult VLM pages
 
-Quality failures (empty, looping, damaged, or token-limited generations) use a
-bounded recovery sequence: full-page OCR, fresh full-page retry, three disjoint
-column regions in Persian reading order, then the configured Paddle detector and
-Arabic recognizer. Transport/configuration failures remain errors. Failed region
-OCR never publishes partial region text. The classic fallback accepts an empty
-page only when the detector found no text regions; detected but unreadable text
-still fails the page. Fallback warnings and actual model provenance are retained
-in each page's module result. Small chart/map labels can still need review.
+Quality failures (empty, looping, damaged, or token-limited generations) use the
+current Persian-oriented sequence: three disjoint top-to-bottom page regions as
+the primary VLM strategy, bounded full-page VLM recovery, then PaddleOCR fallback.
+Transport/configuration failures remain errors. Failed region OCR never publishes
+partial region text. Canonical VLM output removes model transport/control artifacts
+and generated image-caption prose before OCR artifacts are persisted.
 
 `WIKI_HAMI_VLM_REGION_FALLBACK` and `WIKI_HAMI_VLM_CLASSIC_FALLBACK` control these
 fallbacks. `WIKI_HAMI_VLM_DIAGNOSTICS_DIR` stores native model responses in the
