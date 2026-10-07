@@ -8,8 +8,11 @@ deploy-stage:
     - chmod 644 ~/.ssh/known_hosts
   script:
     - echo "$STAGE_SSH_USER"
-    - sshpass -p "$STAGE_SSH_PASSWORD" scp -P "$STAGE_PORT" "$STAGE_ENV_FILE" "$STAGE_SSH_USER@$STAGE_VM_IPADDRESS:/opt/apps/organizational-wiki/ai-scanner/.env"
-    - sshpass -p "$STAGE_SSH_PASSWORD" ssh -p "$STAGE_PORT" "$STAGE_SSH_USER@$STAGE_VM_IPADDRESS" "cd /opt/apps/organizational-wiki/ai-scanner && git pull origin stage && docker compose up --build -d"
+    - export SSHPASS="$STAGE_SSH_PASSWORD"
+    - test -n "$SSHPASS" || (echo "STAGE_SSH_PASSWORD is empty" && exit 1)
+    - test -f "$STAGE_ENV_FILE" || (echo "STAGE_ENV_FILE is missing: $STAGE_ENV_FILE" && exit 1)
+    - sshpass -e scp -P "$STAGE_PORT" "$STAGE_ENV_FILE" "$STAGE_SSH_USER@$STAGE_VM_IPADDRESS:/opt/apps/organizational-wiki/ai-scanner/.env"
+    - sshpass -e ssh -p "$STAGE_PORT" "$STAGE_SSH_USER@$STAGE_VM_IPADDRESS" "cd /opt/apps/organizational-wiki/ai-scanner && git pull origin stage && docker network inspect wikio >/dev/null 2>&1 || docker network create wikio && docker compose up --build -d"
   only:
     - stage
   tags:
