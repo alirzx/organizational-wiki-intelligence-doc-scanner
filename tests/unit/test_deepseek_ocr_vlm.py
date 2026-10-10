@@ -26,8 +26,11 @@ def test_vlm_defaults_can_be_selected_explicitly():
     assert settings.text_extraction_mode == "vlm"
     assert settings.vlm_backend == "ollama"
     assert settings.vlm_model_id == "deepseek-ocr:latest"
-    assert settings.vlm_max_tokens == 6144
-    assert settings.vlm_context_size == 8192
+    assert settings.vlm_max_tokens == 3072
+    assert settings.vlm_context_size == 4096
+    assert settings.vlm_num_threads == 2
+    assert settings.vlm_keep_alive == "30s"
+    assert settings.vlm_diagnostics_max_files == 64
 
 
 def test_factory_can_switch_between_vlm_and_classic_ocr():
@@ -182,9 +185,11 @@ def test_ollama_backend_posts_image_to_chat_endpoint(monkeypatch):
     assert captured["timeout"] == (10.0, 123.0)
     assert captured["json"]["model"] == "deepseek-ocr:latest"
     assert captured["json"]["stream"] is False
+    assert captured["json"]["keep_alive"] == "30s"
     assert captured["json"]["messages"][0]["content"] == "<|grounding|>OCR this image."
-    assert captured["json"]["options"]["num_predict"] == 6144
-    assert captured["json"]["options"]["num_ctx"] == 8192
+    assert captured["json"]["options"]["num_predict"] == 3072
+    assert captured["json"]["options"]["num_ctx"] == 4096
+    assert captured["json"]["options"]["num_thread"] == 2
     encoded = captured["json"]["messages"][0]["images"][0]
     assert base64.b64decode(encoded).startswith(b"\x89PNG")
     assert [line.text for line in lines] == ["متن"]
@@ -229,8 +234,10 @@ def test_invalid_generation_retries_fresh_image_once(monkeypatch, bad_response):
     backend = DeepSeekOCRVLMBackend(Settings(_env_file=None, vlm_crop_margins=False))
     assert backend.predict(Image.new("RGB", (100, 100)))[0].text == "متن صحیح"
     assert len(requests) == 2
-    assert requests[0]["options"]["num_predict"] == 6144
-    assert requests[0]["options"]["num_ctx"] == 8192
+    assert requests[0]["options"]["num_predict"] == 3072
+    assert requests[0]["options"]["num_ctx"] == 4096
+    assert requests[0]["options"]["num_thread"] == 2
+    assert requests[0]["keep_alive"] == "30s"
     assert requests[0]["options"]["repeat_penalty"] == 1.1
     assert requests[0]["messages"][0]["content"] == "\nExtract the text in the image."
     assert requests[1]["messages"][0]["content"] == "\nFree OCR."

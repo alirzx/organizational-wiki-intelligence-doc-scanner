@@ -93,11 +93,16 @@ class Settings(BaseSettings):
     vlm_region_fallback: bool = True
     vlm_classic_fallback: bool = True
     vlm_diagnostics_dir: str = "data/outputs/ocr-diagnostics"
-    # The Ollama deepseek-ocr:latest model has an 8192-token model context.
-    # Increase generation headroom inside that supported context, while horizontal
-    # region OCR remains the primary protection against dense-page truncation.
-    vlm_max_tokens: int = Field(default=6144, ge=1, le=8192)
-    vlm_context_size: int = Field(default=8192, ge=512, le=8192)
+    vlm_diagnostics_max_files: int = Field(default=64, ge=0, le=10_000)
+    vlm_keep_alive: str = "30s"
+    # DeepSeek-OCR supports up to 8192 tokens, but stage-safe defaults use a
+    # smaller context/generation footprint. Region OCR remains the primary
+    # strategy for dense pages; deployments may raise these values explicitly.
+    vlm_max_tokens: int = Field(default=3072, ge=1, le=8192)
+    vlm_context_size: int = Field(default=4096, ge=512, le=8192)
+    # Explicit llama.cpp thread count. Ollama runners can otherwise size their
+    # CPU thread pool from the host rather than the container CPU quota.
+    vlm_num_threads: int = Field(default=2, ge=1, le=64)
     vlm_repeat_penalty: float = Field(default=1.1, ge=1.0, le=2.0)
     vlm_quality_retries: int = Field(default=1, ge=0, le=2)
 
@@ -169,6 +174,14 @@ class Settings(BaseSettings):
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
             value = value[1:-1]
         return value.replace("\\n", "\n")
+
+    @field_validator("vlm_keep_alive")
+    @classmethod
+    def normalize_vlm_keep_alive(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("vlm_keep_alive must not be empty")
+        return normalized
 
     @field_validator("vlm_backend")
     @classmethod
