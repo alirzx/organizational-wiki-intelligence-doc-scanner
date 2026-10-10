@@ -73,22 +73,22 @@ services:
           echo "Classic OCR selected; skipping Ollama model pull."
           exit 0
         fi
-        current_mb="$(du -sm /root/.ollama 2>/dev/null | awk '{print $1}')"
-        current_mb="${current_mb:-0}"
-        if [ "$current_mb" -gt "$MODEL_STORE_MAX_MB" ]; then
-          echo "Ollama model store is already ${current_mb}MB, above configured cap ${MODEL_STORE_MAX_MB}MB." >&2
+        current_mb="$$(du -sm /root/.ollama 2>/dev/null | awk '{print $$1}')"
+        current_mb="$${current_mb:-0}"
+        if [ "$$current_mb" -gt "$$MODEL_STORE_MAX_MB" ]; then
+          echo "Ollama model store is already $${current_mb}MB, above configured cap $${MODEL_STORE_MAX_MB}MB." >&2
           exit 1
         fi
-        if ollama show "$OLLAMA_MODEL" >/dev/null 2>&1; then
-          echo "Ollama model $OLLAMA_MODEL already exists in the persistent project volume."
+        if ollama show "$$OLLAMA_MODEL" >/dev/null 2>&1; then
+          echo "Ollama model $$OLLAMA_MODEL already exists in the persistent project volume."
         else
-          echo "Pulling Ollama model $OLLAMA_MODEL ..."
-          ollama pull "$OLLAMA_MODEL"
+          echo "Pulling Ollama model $$OLLAMA_MODEL ..."
+          ollama pull "$$OLLAMA_MODEL"
         fi
-        final_mb="$(du -sm /root/.ollama 2>/dev/null | awk '{print $1}')"
-        final_mb="${final_mb:-0}"
-        if [ "$final_mb" -gt "$MODEL_STORE_MAX_MB" ]; then
-          echo "Ollama model store reached ${final_mb}MB, above configured cap ${MODEL_STORE_MAX_MB}MB." >&2
+        final_mb="$$(du -sm /root/.ollama 2>/dev/null | awk '{print $$1}')"
+        final_mb="$${final_mb:-0}"
+        if [ "$$final_mb" -gt "$$MODEL_STORE_MAX_MB" ]; then
+          echo "Ollama model store reached $${final_mb}MB, above configured cap $${MODEL_STORE_MAX_MB}MB." >&2
           exit 1
         fi
     mem_limit: "${WIKI_HAMI_OLLAMA_INIT_MEMORY_LIMIT:-512m}"
