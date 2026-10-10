@@ -3,7 +3,7 @@ x-scanner-environment: &scanner-environment
   PADDLE_HOME: /app/.cache/paddle
   PADDLE_PDX_CACHE_HOME: /app/.cache/paddlex
   PADDLE_PDX_MODEL_SOURCE: HUGGINGFACE
-  NVIDIA_VISIBLE_DEVICES: "${WIKI_HAMI_NVIDIA_VISIBLE_DEVICES:-all}"
+  NVIDIA_VISIBLE_DEVICES: "${WIKI_HAMI_NVIDIA_VISIBLE_DEVICES:-none}"
   WIKI_HAMI_VLM_BASE_URL: "${WIKI_HAMI_VLM_BASE_URL:-http://ollama:11434}"
   OMP_NUM_THREADS: "${WIKI_HAMI_CPU_OMP_NUM_THREADS:-1}"
   OPENBLAS_NUM_THREADS: "${WIKI_HAMI_CPU_BLAS_NUM_THREADS:-1}"
@@ -19,7 +19,7 @@ x-default-logging: &default-logging
 services:
   ollama:
     image: "${WIKI_HAMI_OLLAMA_IMAGE:-ollama/ollama:0.40.0}"
-    runtime: "${WIKI_HAMI_OLLAMA_CONTAINER_RUNTIME:-nvidia}"
+    runtime: "${WIKI_HAMI_OLLAMA_CONTAINER_RUNTIME:-runc}"
     environment:
       OLLAMA_HOST: 0.0.0.0:11434
       OLLAMA_MODELS: /root/.ollama/models
@@ -33,7 +33,7 @@ services:
       OLLAMA_NO_CLOUD: "1"
       GOMAXPROCS: "${WIKI_HAMI_OLLAMA_GOMAXPROCS:-2}"
       LLAMA_ARG_CACHE_RAM: "${WIKI_HAMI_OLLAMA_CACHE_RAM_MB:-512}"
-      NVIDIA_VISIBLE_DEVICES: "${WIKI_HAMI_OLLAMA_NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_VISIBLE_DEVICES: "${WIKI_HAMI_OLLAMA_NVIDIA_VISIBLE_DEVICES:-none}"
     volumes:
       - wiki_hami_ollama_models:/root/.ollama
     expose:
@@ -109,9 +109,9 @@ services:
     build:
       context: .
       args:
-        MODEL_RUNTIME: "${WIKI_HAMI_MODEL_RUNTIME:-gpu}"
+        MODEL_RUNTIME: "${WIKI_HAMI_MODEL_RUNTIME:-cpu}"
     image: wiki-hami-extraction:0.2.0
-    runtime: "${WIKI_HAMI_CONTAINER_RUNTIME:-nvidia}"
+    runtime: "${WIKI_HAMI_CONTAINER_RUNTIME:-runc}"
     env_file:
       - .env
     environment:
@@ -145,7 +145,7 @@ services:
 
   worker:
     image: wiki-hami-extraction:0.2.0
-    runtime: "${WIKI_HAMI_CONTAINER_RUNTIME:-nvidia}"
+    runtime: "${WIKI_HAMI_CONTAINER_RUNTIME:-runc}"
     env_file:
       - .env
     environment:
