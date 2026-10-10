@@ -27,6 +27,8 @@ def test_vlm_defaults_can_be_selected_explicitly():
     assert settings.vlm_backend == "ollama"
     assert settings.vlm_model_id == "deepseek-ocr:latest"
     assert settings.vlm_max_tokens == 3072
+    assert settings.vlm_region_max_tokens == 2048
+    assert settings.vlm_module_timeout_seconds == 1200
     assert settings.vlm_context_size == 4096
     assert settings.vlm_num_threads == 2
     assert settings.vlm_keep_alive == "30s"
@@ -161,11 +163,16 @@ def test_ollama_backend_posts_image_to_chat_endpoint(monkeypatch):
                 },
             }
 
-    def fake_post(url, *, json, timeout):
+    def fake_post(url, *, json, timeout, stream):
         captured["url"] = url
         captured["json"] = json
         captured["timeout"] = timeout
-        return Response()
+        captured["stream"] = stream
+        response = Response()
+        response.iter_lines = lambda decode_unicode=True: iter([
+            '{"message":{"role":"assistant","content":"<|ref|>متن<|/ref|><|det|>[[100, 100, 800, 200]]<|/det|>"},"done":true,"done_reason":"stop"}'
+        ])
+        return response
 
     monkeypatch.setattr("app.modules.ocr.deepseek_ocr_vlm_backend.requests.post", fake_post)
     settings = Settings(
@@ -184,7 +191,8 @@ def test_ollama_backend_posts_image_to_chat_endpoint(monkeypatch):
     assert captured["url"] == "http://ollama.test:11434/api/chat"
     assert captured["timeout"] == (10.0, 123.0)
     assert captured["json"]["model"] == "deepseek-ocr:latest"
-    assert captured["json"]["stream"] is False
+    assert captured["json"]["stream"] is True
+    assert captured["stream"] is True
     assert captured["json"]["keep_alive"] == "30s"
     assert captured["json"]["messages"][0]["content"] == "<|grounding|>OCR this image."
     assert captured["json"]["options"]["num_predict"] == 3072
@@ -226,9 +234,12 @@ def test_invalid_generation_retries_fresh_image_once(monkeypatch, bad_response):
         def json(self):
             return next(responses)
 
-    def post(url, *, json, timeout):
+    def post(url, *, json, timeout, stream):
         requests.append(json)
-        return Response()
+        response = Response()
+        body = response.json()
+        response.iter_lines = lambda decode_unicode=True: iter([__import__("json").dumps(body, ensure_ascii=False)])
+        return response
 
     monkeypatch.setattr("app.modules.ocr.deepseek_ocr_vlm_backend.requests.post", post)
     backend = DeepSeekOCRVLMBackend(Settings(_env_file=None, vlm_crop_margins=False))
@@ -325,3 +336,16 @@ def test_damaged_order_or_residual_model_header_is_rejected(content):
 def test_page_number_only_or_malformed_artifact_is_rejected(content):
     with pytest.raises(RuntimeError):
         parse_deepseek_output(content, image_width=100, image_height=100)
+
+
+def test_region_requests_use_smaller_generation_budget(monkeypatch):
+    budgets = []
+    backend = DeepSeekOCRVLMBackend(Settings(_env_file=None, vlm_crop_margins=False))
+
+    def request(image, *, prompt=None, max_tokens=None):
+        budgets.append(max_tokens)
+        return "متن معتبر"
+
+    monkeypatch.setattr(backend, "_request", request)
+    backend.predict_regions(Image.new("RGB", (900, 600), "white"))
+    assert budgets == [2048, 2048, 2048]

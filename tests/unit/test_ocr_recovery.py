@@ -8,6 +8,7 @@ from app.modules.ocr.backend import OCRBackendMetadata
 from app.modules.ocr.deepseek_ocr_vlm_backend import (
     DeepSeekOCRVLMBackend,
     VLMQualityError,
+    VLMTransportError,
     horizontal_regions,
 )
 from app.modules.ocr.paragraph_grouper import group_lines_into_paragraphs
@@ -112,11 +113,21 @@ def test_empty_classic_result_requires_no_detected_regions(monkeypatch, detected
             s._predict(Image.new("RGB", (900, 600)))
 
 
-def test_transport_error_is_not_hidden_by_fallback(monkeypatch):
+def test_transport_error_uses_classic_fallback(monkeypatch):
     s = service()
-    monkeypatch.setattr(s._backend, "predict_regions", Mock(side_effect=RuntimeError("connection refused")))
-    with pytest.raises(RuntimeError, match="connection refused"):
-        s._predict(Image.new("RGB", (900, 600)))
+    monkeypatch.setattr(
+        s._backend,
+        "predict_regions",
+        Mock(side_effect=VLMTransportError("read timed out")),
+    )
+    s._fallback = Mock()
+    s._fallback.predict.return_value = [line("متن بازیابی شده")]
+    s._fallback.last_detection_count = 1
+    s._fallback.metadata = OCRBackendMetadata(backend="paddle", model_id="arabic", detector_id="det")
+    lines, metadata, warnings = s._predict(Image.new("RGB", (900, 600)))
+    assert lines[0].text == "متن بازیابی شده"
+    assert metadata.object_metadata["ocr_strategy"] == "paddle_fallback"
+    assert any("vlm_regions_transport_error" in warning for warning in warnings)
 
 
 def test_regions_cover_every_pixel_once_top_to_bottom():
