@@ -56,6 +56,11 @@ class ExtractionOrchestrator:
             return ProcessingState.FAILED
         return ProcessingState.PARTIAL_SUCCESS
 
+    def _module_timeout(self, module: ModuleName) -> float:
+        if module == ModuleName.OCR and self.settings.text_extraction_mode == "vlm":
+            return self.settings.vlm_module_timeout_seconds
+        return self.settings.module_timeout_seconds
+
     def _failure_status(self, module: ModuleName, exc: BaseException) -> ModuleStatus:
         return ModuleStatus(
             module=module,
@@ -84,8 +89,8 @@ class ExtractionOrchestrator:
             ]
             raw_results = await asyncio.gather(
                 *(
-                    asyncio.wait_for(job, timeout=self.settings.module_timeout_seconds)
-                    for _, job in jobs
+                    asyncio.wait_for(job, timeout=self._module_timeout(module))
+                    for module, job in jobs
                 ),
                 return_exceptions=True,
             )

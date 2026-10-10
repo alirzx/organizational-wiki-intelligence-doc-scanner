@@ -51,6 +51,10 @@ class VLMQualityError(RuntimeError):
     """Unusable model output, eligible for a bounded fresh request."""
 
 
+class VLMTransportError(RuntimeError):
+    """Ollama transport/service failure eligible for classic OCR recovery."""
+
+
 def validate_vlm_text(text: str) -> None:
     if not text.strip() or sum(c.isalpha() for c in re.sub(r"<[^>]*>", "", text)) < 2:
         raise VLMQualityError("DeepSeek-OCR returned no usable text")
@@ -351,7 +355,7 @@ class DeepSeekOCRVLMBackend:
             },
         )
 
-    def _request(self, image: Image.Image, *, prompt: str | None = None) -> str:
+    def _request(self, image: Image.Image, *, prompt: str | None = None, max_tokens: int | None = None) -> str:
         buffer = BytesIO()
         image.convert("RGB").save(buffer, format="PNG")
         encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
@@ -365,11 +369,11 @@ class DeepSeekOCRVLMBackend:
                     "images": [encoded],
                 }
             ],
-            "stream": False,
+            "stream": True,
             "keep_alive": self.settings.vlm_keep_alive,
             "options": {
                 "temperature": 0,
-                "num_predict": self.settings.vlm_max_tokens,
+                "num_predict": self.settings.vlm_max_tokens if max_tokens is None else max_tokens,
                 "num_ctx": self.settings.vlm_context_size,
                 "num_thread": self.settings.vlm_num_threads,
                 "repeat_penalty": self.settings.vlm_repeat_penalty,
@@ -380,17 +384,40 @@ class DeepSeekOCRVLMBackend:
                 url,
                 json=payload,
                 timeout=(10.0, self.settings.vlm_timeout_seconds),
+                stream=True,
             )
             response.raise_for_status()
+            content_parts: list[str] = []
+            final_body: dict[str, Any] | None = None
+            for raw_line in response.iter_lines(decode_unicode=True):
+                if not raw_line:
+                    continue
+                if isinstance(raw_line, bytes):
+                    raw_line = raw_line.decode("utf-8")
+                try:
+                    chunk = json.loads(raw_line)
+                except (TypeError, ValueError) as exc:
+                    raise VLMTransportError("DeepSeek-OCR Ollama streamed invalid JSON") from exc
+                if not isinstance(chunk, dict):
+                    raise VLMTransportError("DeepSeek-OCR Ollama streamed a non-object response")
+                if chunk.get("error"):
+                    raise VLMTransportError(f"DeepSeek-OCR Ollama error: {chunk['error']}")
+                message = chunk.get("message")
+                if isinstance(message, dict) and isinstance(message.get("content"), str):
+                    content_parts.append(message["content"])
+                final_body = chunk
+            if final_body is None:
+                raise VLMTransportError("DeepSeek-OCR Ollama returned an empty stream")
+            body = dict(final_body)
+            message = body.get("message")
+            if not isinstance(message, dict):
+                message = {}
+            body["message"] = {**message, "content": "".join(content_parts)}
         except requests.RequestException as exc:
-            raise RuntimeError(
-                f"DeepSeek-OCR Ollama request failed for {self.settings.vlm_base_url}"
+            raise VLMTransportError(
+                f"DeepSeek-OCR Ollama request failed for {self.settings.vlm_base_url}: "
+                f"{type(exc).__name__}: {exc}"
             ) from exc
-
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise RuntimeError("DeepSeek-OCR Ollama response was not valid JSON") from exc
 
         if self.settings.vlm_diagnostics_dir and self.settings.vlm_diagnostics_max_files > 0:
             # Deterministic per-image/request filenames bound repeated retry storage.
@@ -415,7 +442,7 @@ class DeepSeekOCRVLMBackend:
         if not isinstance(body, dict):
             raise RuntimeError("DeepSeek-OCR Ollama response must be a JSON object")
         if body.get("error"):
-            raise RuntimeError(f"DeepSeek-OCR Ollama error: {body['error']}")
+            raise VLMTransportError(f"DeepSeek-OCR Ollama error: {body['error']}")
         if body.get("done") is not True or body.get("done_reason") == "length":
             raise VLMQualityError(
                 "DeepSeek-OCR generation is incomplete or hit its token limit; "
@@ -458,7 +485,7 @@ class DeepSeekOCRVLMBackend:
         output: list[OCRLine] = []
         for box in horizontal_regions(image):
             region = image.crop(box)
-            content = self._request(region, prompt="\nExtract the text in the image.")
+            content = self._request(region, prompt="\nExtract the text in the image.", max_tokens=self.settings.vlm_region_max_tokens)
             lines = parse_deepseek_output(
                 content, image_width=region.width, image_height=region.height,
             )

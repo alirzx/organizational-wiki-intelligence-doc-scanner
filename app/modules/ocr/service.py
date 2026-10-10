@@ -5,7 +5,7 @@ from app.core.blocking import BlockingPool, run_blocking
 from app.core.config import Settings
 from app.modules.ocr.adapter import lines_to_detected_objects
 from app.modules.ocr.backend import MockOCRBackend, create_ocr_backend
-from app.modules.ocr.deepseek_ocr_vlm_backend import DeepSeekOCRVLMBackend, VLMQualityError
+from app.modules.ocr.deepseek_ocr_vlm_backend import DeepSeekOCRVLMBackend, VLMQualityError, VLMTransportError
 from app.modules.ocr.paddle_backend import PaddleOCRBackend
 from app.modules.ocr.text_normalization import normalize_persian_ocr_text
 from app.modules.ocr.vlm_postprocessing import clean_vlm_lines
@@ -55,6 +55,11 @@ class OCRService:
                     "ocr_strategy": "top_to_bottom_regions",
                 })
                 return lines, metadata, warnings
+            except VLMTransportError as exc:
+                warnings.append(f"vlm_regions_transport_error: {exc}")
+                if not self.settings.vlm_classic_fallback:
+                    raise
+                return self._classic_fallback(image, primary, warnings)
             except VLMQualityError as exc:
                 warnings.append(f"vlm_regions_rejected: {exc}")
 
@@ -71,12 +76,20 @@ class OCRService:
                 "ocr_strategy": "full_page_recovery",
             })
             return lines, metadata, warnings + ["ocr_recovered_by_full_page_vlm"]
+        except VLMTransportError as exc:
+            warnings.append(f"vlm_page_transport_error: {exc}")
+            if not self.settings.vlm_classic_fallback:
+                raise
+            return self._classic_fallback(image, primary, warnings)
         except VLMQualityError as exc:
             warnings.append(f"vlm_page_rejected: {exc}")
 
         if not self.settings.vlm_classic_fallback:
             raise VLMQualityError("Top-to-bottom region OCR and whole-page VLM OCR failed")
 
+        return self._classic_fallback(image, primary, warnings)
+
+    def _classic_fallback(self, image, primary, warnings):
         if self._fallback is None:
             self._fallback = PaddleOCRBackend(self.settings)
         lines = self._fallback.predict(image)
