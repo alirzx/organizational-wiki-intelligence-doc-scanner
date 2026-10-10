@@ -50,9 +50,12 @@ keeps one model loaded, queues at most four requests, and the VLM request uses a
 
 Docker json-file logs rotate via `WIKI_HAMI_LOG_MAX_SIZE` and
 `WIKI_HAMI_LOG_MAX_FILES`; VLM diagnostic JSON is bounded by
-`WIKI_HAMI_VLM_DIAGNOSTICS_MAX_FILES`. The Ollama model volume remains persistent,
-so operators must still monitor the Docker data-root filesystem for model-cache
-disk growth.
+`WIKI_HAMI_VLM_DIAGNOSTICS_MAX_FILES`. The project-owned Ollama volume is mounted
+into the one-shot bootstrap for size checks; `WIKI_HAMI_OLLAMA_MODEL_STORE_MAX_MB`
+defaults to 12288 MB and bootstrap fails if the store is already over the cap or
+crosses it after a pull. This prevents silent model-cache growth, while operators
+should still monitor the Docker data-root filesystem because filesystem-level
+free space is shared with other Docker projects.
 
 ## OCR backend selection
 
