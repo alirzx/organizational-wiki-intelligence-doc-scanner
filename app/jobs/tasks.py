@@ -10,6 +10,25 @@ from app.jobs.processor import process_minio_payload
 from app.schemas.storage import MinioDocumentRequest
 
 
+_CANCELLED_CODE = "CANCELLED"
+
+
+def _is_cancelled_record(record: dict | None) -> bool:
+    if not record or record.get("status") != "failed":
+        return False
+    error = record.get("error")
+    return isinstance(error, dict) and error.get("code") == _CANCELLED_CODE
+
+
+def mark_job_cancelled(job_id: str, document_id: str, *, message: str) -> dict:
+    return get_job_store().update(
+        job_id,
+        status="failed",
+        outputs=None,
+        error={"code": _CANCELLED_CODE, "message": message},
+    )
+
+
 def _deliver_terminal_callback(job_id: str, document_id: str, payload: dict) -> None:
     settings = get_settings()
     store = get_job_store()
@@ -34,6 +53,15 @@ def _deliver_terminal_callback(job_id: str, document_id: str, payload: dict) -> 
 def process_minio_document(self, payload_data: dict, job_id: str) -> dict:
     store = get_job_store()
     payload = MinioDocumentRequest.model_validate(payload_data)
+
+    existing = store.get(job_id)
+    if _is_cancelled_record(existing):
+        return {
+            "job_id": job_id,
+            "document_id": payload.document_id,
+            "status": "failed",
+            "error": existing["error"],
+        }
 
     store.update(
         job_id,

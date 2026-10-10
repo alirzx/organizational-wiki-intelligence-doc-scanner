@@ -32,16 +32,17 @@ services:
       OLLAMA_NOHISTORY: "1"
       OLLAMA_NO_CLOUD: "1"
       GOMAXPROCS: "${WIKI_HAMI_OLLAMA_GOMAXPROCS:-2}"
+      LLAMA_ARG_CACHE_RAM: "${WIKI_HAMI_OLLAMA_CACHE_RAM_MB:-512}"
       NVIDIA_VISIBLE_DEVICES: "${WIKI_HAMI_OLLAMA_NVIDIA_VISIBLE_DEVICES:-none}"
     volumes:
       - wiki_hami_ollama_models:/root/.ollama
     expose:
       - "11434"
-    mem_limit: "${WIKI_HAMI_OLLAMA_MEMORY_LIMIT:-10g}"
-    mem_reservation: "${WIKI_HAMI_OLLAMA_MEMORY_RESERVATION:-6g}"
-    memswap_limit: "${WIKI_HAMI_OLLAMA_MEMORY_SWAP_LIMIT:-10g}"
+    mem_limit: "${WIKI_HAMI_OLLAMA_MEMORY_LIMIT:-12g}"
+    mem_reservation: "${WIKI_HAMI_OLLAMA_MEMORY_RESERVATION:-8g}"
+    memswap_limit: "${WIKI_HAMI_OLLAMA_MEMORY_SWAP_LIMIT:-12g}"
     cpus: "${WIKI_HAMI_OLLAMA_CPUS:-2.0}"
-    pids_limit: ${WIKI_HAMI_OLLAMA_PIDS_LIMIT:-256}
+    pids_limit: ${WIKI_HAMI_OLLAMA_PIDS_LIMIT:-384}
     init: true
     logging: *default-logging
     restart: unless-stopped
@@ -62,7 +63,7 @@ services:
       OLLAMA_HOST: http://ollama:11434
       OLLAMA_MODEL: "${WIKI_HAMI_VLM_MODEL_ID:-deepseek-ocr:latest}"
       TEXT_EXTRACTION_MODE: "${WIKI_HAMI_TEXT_EXTRACTION_MODE:-vlm}"
-      MODEL_STORE_MAX_MB: "${WIKI_HAMI_OLLAMA_MODEL_STORE_MAX_MB:-12288}"
+      MODEL_STORE_MAX_MB: "${WIKI_HAMI_OLLAMA_MODEL_STORE_MAX_MB:-16384}"
     volumes:
       - wiki_hami_ollama_models:/root/.ollama
     entrypoint: ["/bin/sh", "-c"]
@@ -91,10 +92,10 @@ services:
           echo "Ollama model store reached $${final_mb}MB, above configured cap $${MODEL_STORE_MAX_MB}MB." >&2
           exit 1
         fi
-    mem_limit: "${WIKI_HAMI_OLLAMA_INIT_MEMORY_LIMIT:-512m}"
-    memswap_limit: "${WIKI_HAMI_OLLAMA_INIT_MEMORY_SWAP_LIMIT:-512m}"
-    cpus: "${WIKI_HAMI_OLLAMA_INIT_CPUS:-0.5}"
-    pids_limit: ${WIKI_HAMI_OLLAMA_INIT_PIDS_LIMIT:-96}
+    mem_limit: "${WIKI_HAMI_OLLAMA_INIT_MEMORY_LIMIT:-1g}"
+    memswap_limit: "${WIKI_HAMI_OLLAMA_INIT_MEMORY_SWAP_LIMIT:-1g}"
+    cpus: "${WIKI_HAMI_OLLAMA_INIT_CPUS:-1.0}"
+    pids_limit: ${WIKI_HAMI_OLLAMA_INIT_PIDS_LIMIT:-128}
     init: true
     logging: *default-logging
     depends_on:

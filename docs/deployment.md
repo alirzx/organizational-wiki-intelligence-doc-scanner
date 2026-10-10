@@ -224,3 +224,20 @@ should show no loaded model and Ollama CPU usage should settle near idle. If CPU
 remains high, inspect `docker compose logs --tail=200 ollama ollama-model-init`
 before raising any CPU quota; startup download/model preparation is distinct from
 steady-state idle behavior.
+
+
+## CPU VLM resilience
+
+Ollama chat responses are streamed. `WIKI_HAMI_VLM_TIMEOUT_SECONDS` therefore
+measures socket inactivity, not total generation duration. CPU VLM OCR has a
+separate page-module limit `WIKI_HAMI_VLM_MODULE_TIMEOUT_SECONDS=1200`, since
+three region requests can execute sequentially.
+
+Region generation is bounded by `WIKI_HAMI_VLM_REGION_MAX_TOKENS=2048`, while
+whole-page recovery keeps `WIKI_HAMI_VLM_MAX_TOKENS=3072`. Transport failures
+fall back to classic OCR when `WIKI_HAMI_VLM_CLASSIC_FALLBACK=true`.
+
+The llama.cpp prompt cache is bounded by `WIKI_HAMI_OLLAMA_CACHE_RAM_MB=512`.
+Queued/processing jobs can be cancelled through
+`DELETE /api/v1/jobs/{job_id}`; cancellation uses the existing failed callback
+shape with `error.code=CANCELLED`.

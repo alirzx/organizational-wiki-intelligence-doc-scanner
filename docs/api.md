@@ -77,6 +77,17 @@ States:
 queued | processing | completed | failed
 ```
 
+Cancel a queued or processing job without changing the existing state contract:
+
+```http
+DELETE /api/v1/jobs/{job_id}
+X-API-Key: <shared-backend-ai-key>
+```
+
+Cancellation is returned/callback-delivered as `status=failed` with
+`error.code=CANCELLED`. This is additive; existing Backend and MinIO contracts
+remain unchanged.
+
 Completed jobs may include:
 
 ```json

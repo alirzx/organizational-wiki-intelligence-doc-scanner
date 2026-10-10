@@ -85,7 +85,10 @@ class Settings(BaseSettings):
     vlm_backend: str = "ollama"
     vlm_model_id: str = "deepseek-ocr:latest"
     vlm_base_url: str = "http://localhost:11434"
+    # With streaming this is a socket-inactivity timeout, not total generation time.
     vlm_timeout_seconds: float = 360.0
+    # Three sequential CPU region requests need a separate page-module budget.
+    vlm_module_timeout_seconds: float = Field(default=1200.0, ge=60.0, le=7200.0)
     vlm_prompt: str = "\nExtract the text in the image."
     vlm_crop_margins: bool = True
     # Kept under the existing environment name for deployment compatibility.
@@ -99,6 +102,7 @@ class Settings(BaseSettings):
     # smaller context/generation footprint. Region OCR remains the primary
     # strategy for dense pages; deployments may raise these values explicitly.
     vlm_max_tokens: int = Field(default=3072, ge=1, le=8192)
+    vlm_region_max_tokens: int = Field(default=2048, ge=256, le=8192)
     vlm_context_size: int = Field(default=4096, ge=512, le=8192)
     # Explicit llama.cpp thread count. Ollama runners can otherwise size their
     # CPU thread pool from the host rather than the container CPU quota.
@@ -182,6 +186,12 @@ class Settings(BaseSettings):
         if not normalized:
             raise ValueError("vlm_keep_alive must not be empty")
         return normalized
+
+    @model_validator(mode="after")
+    def validate_vlm_token_budgets(self) -> "Settings":
+        if self.vlm_region_max_tokens > self.vlm_max_tokens:
+            raise ValueError("vlm_region_max_tokens must be <= vlm_max_tokens")
+        return self
 
     @field_validator("vlm_backend")
     @classmethod
