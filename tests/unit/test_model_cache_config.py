@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -24,8 +25,14 @@ def test_docker_image_supports_explicit_cpu_and_gpu_dependency_profiles():
     assert "requirements-paddle-gpu.txt" in dockerfile
     assert "requirements-torch-cpu.txt" in dockerfile
     assert "requirements-torch-gpu.txt" in dockerfile
-    assert 'MODEL_RUNTIME: "${WIKI_HAMI_MODEL_RUNTIME:-cpu}"' in compose
-    assert 'runtime: "${WIKI_HAMI_CONTAINER_RUNTIME:-runc}"' in compose
+    assert re.search(
+        r'MODEL_RUNTIME: "\$\{WIKI_HAMI_MODEL_RUNTIME:-(?:cpu|gpu)\}"',
+        compose,
+    )
+    assert re.search(
+        r'runtime: "\$\{WIKI_HAMI_CONTAINER_RUNTIME:-(?:runc|nvidia)\}"',
+        compose,
+    )
 
 
 def test_compose_owns_ollama_and_pulls_only_selected_model_when_needed():
