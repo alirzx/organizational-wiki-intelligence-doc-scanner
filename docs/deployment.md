@@ -42,11 +42,19 @@ The Ollama port is exposed only on the Compose network.
 
 ### Memory and disk safety
 
-Stage defaults apply cgroup limits instead of trusting the model runtime to consume
-whatever the host has available. Ollama is capped at 10 GB RAM with swap disabled,
-worker at 10 GB, API at 2 GB, and UI at 1 GB. Ollama serves one request at a time,
-keeps one model loaded, queues at most four requests, and the VLM request uses a
-30-second keep-alive so memory is released shortly after an OCR burst.
+Stage defaults are sized for the shared ~30 GB / 7-core host, not for a dedicated
+AI machine. Ollama is capped at 10 GB RAM and 2 CPUs, worker at 7 GB / 1 CPU,
+API at 1 GB / 0.5 CPU, and UI at 512 MB / 0.25 CPU. Thus the long-running Scanner
+services can consume at most about 3.75 CPU cores, leaving more than three cores
+for Backend, Frontend, Redis, MinIO, Template Maker, Doc Linker, and the OS.
+Swap is disabled inside the Scanner containers by setting memory+swap equal to
+the memory limit. Ollama serves one request at a time, queues at most two, keeps
+one model loaded, and the VLM request uses a 30-second keep-alive.
+
+CPU quota alone is not sufficient for CPU inference: each DeepSeek request also
+sets `num_thread=2`, matching the Ollama 2-CPU cgroup budget. In-process numerical
+libraries are capped to one OpenMP/BLAS/MKL/NumExpr thread to prevent nested CPU
+oversubscription in Paddle/Torch/numpy code.
 
 Docker json-file logs rotate via `WIKI_HAMI_LOG_MAX_SIZE` and
 `WIKI_HAMI_LOG_MAX_FILES`; VLM diagnostic JSON is bounded by
@@ -88,7 +96,8 @@ Switching backend does not change API, callback, MinIO, `OCR.txt`, or
 any in-process OCR/Figure-Table/Stamp-Signature module uses a GPU. Individual
 module devices can still be `cpu`.
 
-For a fully CPU scanner:
+For the `stage` branch the defaults are already fully CPU-only. The explicit
+production values are:
 
 ```env
 WIKI_HAMI_MODEL_RUNTIME=cpu
@@ -97,6 +106,10 @@ WIKI_HAMI_NVIDIA_VISIBLE_DEVICES=none
 WIKI_HAMI_OCR_DEVICE=cpu
 WIKI_HAMI_FIGURE_TABLE_DEVICE=cpu
 WIKI_HAMI_STAMP_SIGNATURE_DEVICE=cpu
+WIKI_HAMI_OLLAMA_CONTAINER_RUNTIME=runc
+WIKI_HAMI_OLLAMA_NVIDIA_VISIBLE_DEVICES=none
+WIKI_HAMI_VLM_NUM_THREADS=2
+WIKI_HAMI_OLLAMA_CPUS=2.0
 ```
 
 GPU scanner container exposure:
@@ -192,3 +205,22 @@ Backend `ready` state.
 - Persistent model volumes should be monitored for disk use.
 - Keep worker concurrency conservative for model memory.
 - The GitLab CI definition is intentionally unchanged by this refactor.
+
+
+## Shared-host resource verification
+
+After deployment, verify the *effective* cgroup quotas instead of trusting the env file:
+
+```bash
+docker compose config | sed -n '/ollama:/,/ollama-model-init:/p'
+docker inspect "$(docker compose ps -q ollama)" --format 'NanoCPUs={{.HostConfig.NanoCpus}} Memory={{.HostConfig.Memory}} MemorySwap={{.HostConfig.MemorySwap}}'
+docker inspect "$(docker compose ps -q worker)" --format 'NanoCPUs={{.HostConfig.NanoCpus}} Memory={{.HostConfig.Memory}} MemorySwap={{.HostConfig.MemorySwap}}'
+docker compose exec -T ollama sh -lc 'env | grep -E "OLLAMA_(NUM_PARALLEL|MAX_QUEUE|MAX_LOADED_MODELS|MAX_TRANSFER_STREAMS|CONTEXT_LENGTH)|GOMAXPROCS" | sort'
+docker stats --no-stream
+```
+
+With no inference request and after the 30-second keep-alive expires, `ollama ps`
+should show no loaded model and Ollama CPU usage should settle near idle. If CPU
+remains high, inspect `docker compose logs --tail=200 ollama ollama-model-init`
+before raising any CPU quota; startup download/model preparation is distinct from
+steady-state idle behavior.

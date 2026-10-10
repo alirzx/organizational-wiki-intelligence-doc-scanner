@@ -28,6 +28,7 @@ def test_vlm_defaults_can_be_selected_explicitly():
     assert settings.vlm_model_id == "deepseek-ocr:latest"
     assert settings.vlm_max_tokens == 3072
     assert settings.vlm_context_size == 4096
+    assert settings.vlm_num_threads == 2
     assert settings.vlm_keep_alive == "30s"
     assert settings.vlm_diagnostics_max_files == 64
 
@@ -188,6 +189,7 @@ def test_ollama_backend_posts_image_to_chat_endpoint(monkeypatch):
     assert captured["json"]["messages"][0]["content"] == "<|grounding|>OCR this image."
     assert captured["json"]["options"]["num_predict"] == 3072
     assert captured["json"]["options"]["num_ctx"] == 4096
+    assert captured["json"]["options"]["num_thread"] == 2
     encoded = captured["json"]["messages"][0]["images"][0]
     assert base64.b64decode(encoded).startswith(b"\x89PNG")
     assert [line.text for line in lines] == ["متن"]
@@ -234,6 +236,7 @@ def test_invalid_generation_retries_fresh_image_once(monkeypatch, bad_response):
     assert len(requests) == 2
     assert requests[0]["options"]["num_predict"] == 3072
     assert requests[0]["options"]["num_ctx"] == 4096
+    assert requests[0]["options"]["num_thread"] == 2
     assert requests[0]["keep_alive"] == "30s"
     assert requests[0]["options"]["repeat_penalty"] == 1.1
     assert requests[0]["messages"][0]["content"] == "\nExtract the text in the image."

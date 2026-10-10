@@ -371,6 +371,7 @@ class DeepSeekOCRVLMBackend:
                 "temperature": 0,
                 "num_predict": self.settings.vlm_max_tokens,
                 "num_ctx": self.settings.vlm_context_size,
+                "num_thread": self.settings.vlm_num_threads,
                 "repeat_penalty": self.settings.vlm_repeat_penalty,
             },
         }

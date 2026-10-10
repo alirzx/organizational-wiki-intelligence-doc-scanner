@@ -3,8 +3,12 @@ x-scanner-environment: &scanner-environment
   PADDLE_HOME: /app/.cache/paddle
   PADDLE_PDX_CACHE_HOME: /app/.cache/paddlex
   PADDLE_PDX_MODEL_SOURCE: HUGGINGFACE
-  NVIDIA_VISIBLE_DEVICES: "${WIKI_HAMI_NVIDIA_VISIBLE_DEVICES:-all}"
+  NVIDIA_VISIBLE_DEVICES: "${WIKI_HAMI_NVIDIA_VISIBLE_DEVICES:-none}"
   WIKI_HAMI_VLM_BASE_URL: "${WIKI_HAMI_VLM_BASE_URL:-http://ollama:11434}"
+  OMP_NUM_THREADS: "${WIKI_HAMI_CPU_OMP_NUM_THREADS:-1}"
+  OPENBLAS_NUM_THREADS: "${WIKI_HAMI_CPU_BLAS_NUM_THREADS:-1}"
+  MKL_NUM_THREADS: "${WIKI_HAMI_CPU_MKL_NUM_THREADS:-1}"
+  NUMEXPR_NUM_THREADS: "${WIKI_HAMI_CPU_NUMEXPR_NUM_THREADS:-1}"
 
 x-default-logging: &default-logging
   driver: json-file
@@ -15,16 +19,20 @@ x-default-logging: &default-logging
 services:
   ollama:
     image: "${WIKI_HAMI_OLLAMA_IMAGE:-ollama/ollama:0.40.0}"
-    runtime: "${WIKI_HAMI_OLLAMA_CONTAINER_RUNTIME:-nvidia}"
+    runtime: "${WIKI_HAMI_OLLAMA_CONTAINER_RUNTIME:-runc}"
     environment:
       OLLAMA_HOST: 0.0.0.0:11434
       OLLAMA_MODELS: /root/.ollama/models
       OLLAMA_KEEP_ALIVE: "${WIKI_HAMI_OLLAMA_KEEP_ALIVE:-30s}"
       OLLAMA_MAX_LOADED_MODELS: "${WIKI_HAMI_OLLAMA_MAX_LOADED_MODELS:-1}"
       OLLAMA_NUM_PARALLEL: "${WIKI_HAMI_OLLAMA_NUM_PARALLEL:-1}"
-      OLLAMA_MAX_QUEUE: "${WIKI_HAMI_OLLAMA_MAX_QUEUE:-4}"
+      OLLAMA_MAX_QUEUE: "${WIKI_HAMI_OLLAMA_MAX_QUEUE:-2}"
+      OLLAMA_MAX_TRANSFER_STREAMS: "${WIKI_HAMI_OLLAMA_MAX_TRANSFER_STREAMS:-1}"
+      OLLAMA_CONTEXT_LENGTH: "${WIKI_HAMI_VLM_CONTEXT_SIZE:-4096}"
       OLLAMA_NOHISTORY: "1"
-      NVIDIA_VISIBLE_DEVICES: "${WIKI_HAMI_OLLAMA_NVIDIA_VISIBLE_DEVICES:-all}"
+      OLLAMA_NO_CLOUD: "1"
+      GOMAXPROCS: "${WIKI_HAMI_OLLAMA_GOMAXPROCS:-2}"
+      NVIDIA_VISIBLE_DEVICES: "${WIKI_HAMI_OLLAMA_NVIDIA_VISIBLE_DEVICES:-none}"
     volumes:
       - wiki_hami_ollama_models:/root/.ollama
     expose:
@@ -32,8 +40,8 @@ services:
     mem_limit: "${WIKI_HAMI_OLLAMA_MEMORY_LIMIT:-10g}"
     mem_reservation: "${WIKI_HAMI_OLLAMA_MEMORY_RESERVATION:-6g}"
     memswap_limit: "${WIKI_HAMI_OLLAMA_MEMORY_SWAP_LIMIT:-10g}"
-    cpus: "${WIKI_HAMI_OLLAMA_CPUS:-4.0}"
-    pids_limit: ${WIKI_HAMI_OLLAMA_PIDS_LIMIT:-512}
+    cpus: "${WIKI_HAMI_OLLAMA_CPUS:-2.0}"
+    pids_limit: ${WIKI_HAMI_OLLAMA_PIDS_LIMIT:-256}
     init: true
     logging: *default-logging
     restart: unless-stopped
@@ -85,8 +93,8 @@ services:
         fi
     mem_limit: "${WIKI_HAMI_OLLAMA_INIT_MEMORY_LIMIT:-512m}"
     memswap_limit: "${WIKI_HAMI_OLLAMA_INIT_MEMORY_SWAP_LIMIT:-512m}"
-    cpus: "${WIKI_HAMI_OLLAMA_INIT_CPUS:-1.0}"
-    pids_limit: ${WIKI_HAMI_OLLAMA_INIT_PIDS_LIMIT:-128}
+    cpus: "${WIKI_HAMI_OLLAMA_INIT_CPUS:-0.5}"
+    pids_limit: ${WIKI_HAMI_OLLAMA_INIT_PIDS_LIMIT:-96}
     init: true
     logging: *default-logging
     depends_on:
@@ -100,9 +108,9 @@ services:
     build:
       context: .
       args:
-        MODEL_RUNTIME: "${WIKI_HAMI_MODEL_RUNTIME:-gpu}"
+        MODEL_RUNTIME: "${WIKI_HAMI_MODEL_RUNTIME:-cpu}"
     image: wiki-hami-extraction:0.2.0
-    runtime: "${WIKI_HAMI_CONTAINER_RUNTIME:-nvidia}"
+    runtime: "${WIKI_HAMI_CONTAINER_RUNTIME:-runc}"
     env_file:
       - .env
     environment:
@@ -114,11 +122,11 @@ services:
       - wiki_hami_model_cache:/app/.cache
       - ./data/outputs:/app/data/outputs
     shm_size: "2gb"
-    mem_limit: "${WIKI_HAMI_API_MEMORY_LIMIT:-2g}"
-    mem_reservation: "${WIKI_HAMI_API_MEMORY_RESERVATION:-512m}"
-    memswap_limit: "${WIKI_HAMI_API_MEMORY_SWAP_LIMIT:-2g}"
-    cpus: "${WIKI_HAMI_API_CPUS:-2.0}"
-    pids_limit: ${WIKI_HAMI_API_PIDS_LIMIT:-256}
+    mem_limit: "${WIKI_HAMI_API_MEMORY_LIMIT:-1g}"
+    mem_reservation: "${WIKI_HAMI_API_MEMORY_RESERVATION:-256m}"
+    memswap_limit: "${WIKI_HAMI_API_MEMORY_SWAP_LIMIT:-1g}"
+    cpus: "${WIKI_HAMI_API_CPUS:-0.5}"
+    pids_limit: ${WIKI_HAMI_API_PIDS_LIMIT:-128}
     init: true
     logging: *default-logging
     depends_on:
@@ -136,7 +144,7 @@ services:
 
   worker:
     image: wiki-hami-extraction:0.2.0
-    runtime: "${WIKI_HAMI_CONTAINER_RUNTIME:-nvidia}"
+    runtime: "${WIKI_HAMI_CONTAINER_RUNTIME:-runc}"
     env_file:
       - .env
     environment:
@@ -146,11 +154,11 @@ services:
       - wiki_hami_model_cache:/app/.cache
       - ./data/outputs:/app/data/outputs
     shm_size: "2gb"
-    mem_limit: "${WIKI_HAMI_WORKER_MEMORY_LIMIT:-10g}"
-    mem_reservation: "${WIKI_HAMI_WORKER_MEMORY_RESERVATION:-5g}"
-    memswap_limit: "${WIKI_HAMI_WORKER_MEMORY_SWAP_LIMIT:-10g}"
-    cpus: "${WIKI_HAMI_WORKER_CPUS:-4.0}"
-    pids_limit: ${WIKI_HAMI_WORKER_PIDS_LIMIT:-512}
+    mem_limit: "${WIKI_HAMI_WORKER_MEMORY_LIMIT:-7g}"
+    mem_reservation: "${WIKI_HAMI_WORKER_MEMORY_RESERVATION:-3g}"
+    memswap_limit: "${WIKI_HAMI_WORKER_MEMORY_SWAP_LIMIT:-7g}"
+    cpus: "${WIKI_HAMI_WORKER_CPUS:-1.0}"
+    pids_limit: ${WIKI_HAMI_WORKER_PIDS_LIMIT:-256}
     init: true
     logging: *default-logging
     depends_on:
@@ -175,11 +183,11 @@ services:
     command: streamlit run ui/streamlit_app.py --server.address 0.0.0.0 --server.port 8501
     ports:
       - "8501:8501"
-    mem_limit: "${WIKI_HAMI_UI_MEMORY_LIMIT:-1g}"
-    mem_reservation: "${WIKI_HAMI_UI_MEMORY_RESERVATION:-256m}"
-    memswap_limit: "${WIKI_HAMI_UI_MEMORY_SWAP_LIMIT:-1g}"
-    cpus: "${WIKI_HAMI_UI_CPUS:-1.0}"
-    pids_limit: ${WIKI_HAMI_UI_PIDS_LIMIT:-128}
+    mem_limit: "${WIKI_HAMI_UI_MEMORY_LIMIT:-512m}"
+    mem_reservation: "${WIKI_HAMI_UI_MEMORY_RESERVATION:-128m}"
+    memswap_limit: "${WIKI_HAMI_UI_MEMORY_SWAP_LIMIT:-512m}"
+    cpus: "${WIKI_HAMI_UI_CPUS:-0.25}"
+    pids_limit: ${WIKI_HAMI_UI_PIDS_LIMIT:-64}
     init: true
     logging: *default-logging
     depends_on:

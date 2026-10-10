@@ -288,10 +288,12 @@ docker compose logs --tail=100 worker ollama-model-init
 ```
 
 CPU/GPU dependency profile, container runtime, per-module devices, and Ollama
-runtime are configured through `.env`. Stage also has an explicit resource
-envelope: Docker hard memory/swap/CPU/PID limits, single-request Ollama
-parallelism, bounded queue/model residency, rotated Docker logs, and bounded VLM
-diagnostics. Keep host headroom for Redis, MinIO, Backend, the kernel, and cache.
+runtime are configured through `.env`. The `stage` branch defaults are CPU-only
+and sized for the shared 7-core/~30 GB server: Ollama is capped at 2 CPUs and
+each VLM request explicitly uses 2 llama threads, worker at 1 CPU, API at 0.5,
+and UI at 0.25. Hard memory/swap/PID limits, single-request Ollama parallelism,
+bounded queue/model residency, rotated Docker logs, and bounded VLM diagnostics
+preserve host headroom for Backend, Frontend, Redis, MinIO, and other AI stages.
 
 The worker is required in production; without it, requests are accepted but remain queued. Current worker concurrency is intentionally `1` because model instances are process-local and memory-heavy.
 

@@ -100,6 +100,9 @@ class Settings(BaseSettings):
     # strategy for dense pages; deployments may raise these values explicitly.
     vlm_max_tokens: int = Field(default=3072, ge=1, le=8192)
     vlm_context_size: int = Field(default=4096, ge=512, le=8192)
+    # Explicit llama.cpp thread count. Ollama runners can otherwise size their
+    # CPU thread pool from the host rather than the container CPU quota.
+    vlm_num_threads: int = Field(default=2, ge=1, le=64)
     vlm_repeat_penalty: float = Field(default=1.1, ge=1.0, le=2.0)
     vlm_quality_retries: int = Field(default=1, ge=0, le=2)
 
