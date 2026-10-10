@@ -40,6 +40,20 @@ WIKI_HAMI_VLM_BASE_URL=http://ollama:11434
 
 The Ollama port is exposed only on the Compose network.
 
+### Memory and disk safety
+
+Stage defaults apply cgroup limits instead of trusting the model runtime to consume
+whatever the host has available. Ollama is capped at 10 GB RAM with swap disabled,
+worker at 10 GB, API at 2 GB, and UI at 1 GB. Ollama serves one request at a time,
+keeps one model loaded, queues at most four requests, and the VLM request uses a
+30-second keep-alive so memory is released shortly after an OCR burst.
+
+Docker json-file logs rotate via `WIKI_HAMI_LOG_MAX_SIZE` and
+`WIKI_HAMI_LOG_MAX_FILES`; VLM diagnostic JSON is bounded by
+`WIKI_HAMI_VLM_DIAGNOSTICS_MAX_FILES`. The Ollama model volume remains persistent,
+so operators must still monitor the Docker data-root filesystem for model-cache
+disk growth.
+
 ## OCR backend selection
 
 DeepSeek/Ollama:

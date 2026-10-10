@@ -6,6 +6,12 @@ x-scanner-environment: &scanner-environment
   NVIDIA_VISIBLE_DEVICES: "${WIKI_HAMI_NVIDIA_VISIBLE_DEVICES:-all}"
   WIKI_HAMI_VLM_BASE_URL: "${WIKI_HAMI_VLM_BASE_URL:-http://ollama:11434}"
 
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "${WIKI_HAMI_LOG_MAX_SIZE:-20m}"
+    max-file: "${WIKI_HAMI_LOG_MAX_FILES:-3}"
+
 services:
   ollama:
     image: "${WIKI_HAMI_OLLAMA_IMAGE:-ollama/ollama:0.40.0}"
@@ -13,13 +19,23 @@ services:
     environment:
       OLLAMA_HOST: 0.0.0.0:11434
       OLLAMA_MODELS: /root/.ollama/models
-      OLLAMA_KEEP_ALIVE: "${WIKI_HAMI_OLLAMA_KEEP_ALIVE:-5m}"
+      OLLAMA_KEEP_ALIVE: "${WIKI_HAMI_OLLAMA_KEEP_ALIVE:-30s}"
       OLLAMA_MAX_LOADED_MODELS: "${WIKI_HAMI_OLLAMA_MAX_LOADED_MODELS:-1}"
+      OLLAMA_NUM_PARALLEL: "${WIKI_HAMI_OLLAMA_NUM_PARALLEL:-1}"
+      OLLAMA_MAX_QUEUE: "${WIKI_HAMI_OLLAMA_MAX_QUEUE:-4}"
+      OLLAMA_NOHISTORY: "1"
       NVIDIA_VISIBLE_DEVICES: "${WIKI_HAMI_OLLAMA_NVIDIA_VISIBLE_DEVICES:-all}"
     volumes:
       - wiki_hami_ollama_models:/root/.ollama
     expose:
       - "11434"
+    mem_limit: "${WIKI_HAMI_OLLAMA_MEMORY_LIMIT:-10g}"
+    mem_reservation: "${WIKI_HAMI_OLLAMA_MEMORY_RESERVATION:-6g}"
+    memswap_limit: "${WIKI_HAMI_OLLAMA_MEMORY_SWAP_LIMIT:-10g}"
+    cpus: "${WIKI_HAMI_OLLAMA_CPUS:-4.0}"
+    pids_limit: ${WIKI_HAMI_OLLAMA_PIDS_LIMIT:-512}
+    init: true
+    logging: *default-logging
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "OLLAMA_HOST=http://127.0.0.1:11434 ollama list >/dev/null 2>&1"]
@@ -52,6 +68,12 @@ services:
           echo "Pulling Ollama model $$OLLAMA_MODEL ..."
           ollama pull "$$OLLAMA_MODEL"
         fi
+    mem_limit: "${WIKI_HAMI_OLLAMA_INIT_MEMORY_LIMIT:-512m}"
+    memswap_limit: "${WIKI_HAMI_OLLAMA_INIT_MEMORY_SWAP_LIMIT:-512m}"
+    cpus: "${WIKI_HAMI_OLLAMA_INIT_CPUS:-1.0}"
+    pids_limit: ${WIKI_HAMI_OLLAMA_INIT_PIDS_LIMIT:-128}
+    init: true
+    logging: *default-logging
     depends_on:
       ollama:
         condition: service_healthy
@@ -77,6 +99,13 @@ services:
       - wiki_hami_model_cache:/app/.cache
       - ./data/outputs:/app/data/outputs
     shm_size: "2gb"
+    mem_limit: "${WIKI_HAMI_API_MEMORY_LIMIT:-2g}"
+    mem_reservation: "${WIKI_HAMI_API_MEMORY_RESERVATION:-512m}"
+    memswap_limit: "${WIKI_HAMI_API_MEMORY_SWAP_LIMIT:-2g}"
+    cpus: "${WIKI_HAMI_API_CPUS:-2.0}"
+    pids_limit: ${WIKI_HAMI_API_PIDS_LIMIT:-256}
+    init: true
+    logging: *default-logging
     depends_on:
       ollama-model-init:
         condition: service_completed_successfully
@@ -102,6 +131,13 @@ services:
       - wiki_hami_model_cache:/app/.cache
       - ./data/outputs:/app/data/outputs
     shm_size: "2gb"
+    mem_limit: "${WIKI_HAMI_WORKER_MEMORY_LIMIT:-10g}"
+    mem_reservation: "${WIKI_HAMI_WORKER_MEMORY_RESERVATION:-5g}"
+    memswap_limit: "${WIKI_HAMI_WORKER_MEMORY_SWAP_LIMIT:-10g}"
+    cpus: "${WIKI_HAMI_WORKER_CPUS:-4.0}"
+    pids_limit: ${WIKI_HAMI_WORKER_PIDS_LIMIT:-512}
+    init: true
+    logging: *default-logging
     depends_on:
       ollama-model-init:
         condition: service_completed_successfully
@@ -124,6 +160,13 @@ services:
     command: streamlit run ui/streamlit_app.py --server.address 0.0.0.0 --server.port 8501
     ports:
       - "8501:8501"
+    mem_limit: "${WIKI_HAMI_UI_MEMORY_LIMIT:-1g}"
+    mem_reservation: "${WIKI_HAMI_UI_MEMORY_RESERVATION:-256m}"
+    memswap_limit: "${WIKI_HAMI_UI_MEMORY_SWAP_LIMIT:-1g}"
+    cpus: "${WIKI_HAMI_UI_CPUS:-1.0}"
+    pids_limit: ${WIKI_HAMI_UI_PIDS_LIMIT:-128}
+    init: true
+    logging: *default-logging
     depends_on:
       api:
         condition: service_healthy

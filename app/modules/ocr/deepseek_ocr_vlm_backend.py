@@ -366,6 +366,7 @@ class DeepSeekOCRVLMBackend:
                 }
             ],
             "stream": False,
+            "keep_alive": self.settings.vlm_keep_alive,
             "options": {
                 "temperature": 0,
                 "num_predict": self.settings.vlm_max_tokens,
@@ -390,7 +391,7 @@ class DeepSeekOCRVLMBackend:
         except ValueError as exc:
             raise RuntimeError("DeepSeek-OCR Ollama response was not valid JSON") from exc
 
-        if self.settings.vlm_diagnostics_dir:
+        if self.settings.vlm_diagnostics_dir and self.settings.vlm_diagnostics_max_files > 0:
             # Deterministic per-image/request filenames bound repeated retry storage.
             digest = hashlib.sha256(buffer.getvalue())
             digest.update(json.dumps({k: v for k, v in payload.items() if k != "messages"}, sort_keys=True).encode())
@@ -401,6 +402,13 @@ class DeepSeekOCRVLMBackend:
                 (directory / f"{digest.hexdigest()}.json").write_text(
                     json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8",
                 )
+                retained = sorted(
+                    directory.glob("*.json"),
+                    key=lambda path: path.stat().st_mtime_ns,
+                    reverse=True,
+                )
+                for stale in retained[self.settings.vlm_diagnostics_max_files:]:
+                    stale.unlink(missing_ok=True)
             except OSError:
                 logger.exception("Could not retain local OCR response diagnostics")
         if not isinstance(body, dict):
