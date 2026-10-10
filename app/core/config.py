@@ -1,9 +1,10 @@
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+SUPPORTED_MODEL_RUNTIMES = frozenset({"cpu", "gpu"})
 SUPPORTED_TEXT_EXTRACTION_MODES = frozenset({"ocr", "vlm"})
 SUPPORTED_OCR_BACKENDS = frozenset({"mock", "paddle", "bina_rizeh"})
 SUPPORTED_VLM_BACKENDS = frozenset({"ollama"})
@@ -15,6 +16,7 @@ class Settings(BaseSettings):
     schema_version: str = "wiki-hami.extraction.v1"
     environment: str = "local"
     log_level: str = "INFO"
+    model_runtime: str = "gpu"  # cpu | gpu; scanner Paddle/Torch dependency profile
 
     max_upload_bytes: int = 25 * 1024 * 1024
     max_image_pixels: int = 50_000_000
@@ -78,12 +80,15 @@ class Settings(BaseSettings):
     ocr_paragraph_max_gap_ratio: float = 1.8
     ocr_paragraph_min_x_overlap: float = 0.15
 
-    # VLM path. DeepSeek-OCR is served remotely by Ollama so the Wiki Hami
-    # application does not load another local GPU model when this mode is active.
+    # VLM path. Docker Compose owns an isolated Ollama service by default; direct
+    # local processes may point this URL at any explicitly configured Ollama endpoint.
     vlm_backend: str = "ollama"
     vlm_model_id: str = "deepseek-ocr:latest"
     vlm_base_url: str = "http://localhost:11434"
+    # With streaming this is a socket-inactivity timeout, not total generation time.
     vlm_timeout_seconds: float = 360.0
+    # Three sequential CPU region requests need a separate page-module budget.
+    vlm_module_timeout_seconds: float = Field(default=1200.0, ge=60.0, le=7200.0)
     vlm_prompt: str = "\nExtract the text in the image."
     vlm_crop_margins: bool = True
     # Kept under the existing environment name for deployment compatibility.
@@ -91,11 +96,17 @@ class Settings(BaseSettings):
     vlm_region_fallback: bool = True
     vlm_classic_fallback: bool = True
     vlm_diagnostics_dir: str = "data/outputs/ocr-diagnostics"
-    # The Ollama deepseek-ocr:latest model has an 8192-token model context.
-    # Increase generation headroom inside that supported context, while horizontal
-    # region OCR remains the primary protection against dense-page truncation.
-    vlm_max_tokens: int = Field(default=6144, ge=1, le=8192)
-    vlm_context_size: int = Field(default=8192, ge=512, le=8192)
+    vlm_diagnostics_max_files: int = Field(default=64, ge=0, le=10_000)
+    vlm_keep_alive: str = "30s"
+    # DeepSeek-OCR supports up to 8192 tokens, but stage-safe defaults use a
+    # smaller context/generation footprint. Region OCR remains the primary
+    # strategy for dense pages; deployments may raise these values explicitly.
+    vlm_max_tokens: int = Field(default=3072, ge=1, le=8192)
+    vlm_region_max_tokens: int = Field(default=2048, ge=256, le=8192)
+    vlm_context_size: int = Field(default=4096, ge=512, le=8192)
+    # Explicit llama.cpp thread count. Ollama runners can otherwise size their
+    # CPU thread pool from the host rather than the container CPU quota.
+    vlm_num_threads: int = Field(default=2, ge=1, le=64)
     vlm_repeat_penalty: float = Field(default=1.1, ge=1.0, le=2.0)
     vlm_quality_retries: int = Field(default=1, ge=0, le=2)
 
@@ -133,6 +144,15 @@ class Settings(BaseSettings):
     def table_label_set(self) -> set[str]:
         return {value.strip().lower() for value in self.table_labels.split(",") if value.strip()}
 
+    @field_validator("model_runtime")
+    @classmethod
+    def validate_model_runtime(cls, value: str) -> str:
+        runtime = value.strip().lower()
+        if runtime not in SUPPORTED_MODEL_RUNTIMES:
+            supported = ", ".join(sorted(SUPPORTED_MODEL_RUNTIMES))
+            raise ValueError(f"model_runtime must be one of: {supported}")
+        return runtime
+
     @field_validator("text_extraction_mode")
     @classmethod
     def validate_text_extraction_mode(cls, value: str) -> str:
@@ -159,6 +179,20 @@ class Settings(BaseSettings):
             value = value[1:-1]
         return value.replace("\\n", "\n")
 
+    @field_validator("vlm_keep_alive")
+    @classmethod
+    def normalize_vlm_keep_alive(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("vlm_keep_alive must not be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_vlm_token_budgets(self) -> "Settings":
+        if self.vlm_region_max_tokens > self.vlm_max_tokens:
+            raise ValueError("vlm_region_max_tokens must be <= vlm_max_tokens")
+        return self
+
     @field_validator("vlm_backend")
     @classmethod
     def validate_vlm_backend(cls, value: str) -> str:
@@ -175,6 +209,38 @@ class Settings(BaseSettings):
         if not normalized.startswith(("http://", "https://")):
             raise ValueError("vlm_base_url must start with http:// or https://")
         return normalized
+
+
+    @model_validator(mode="after")
+    def validate_cpu_runtime_devices(self) -> "Settings":
+        if self.model_runtime != "cpu":
+            return self
+
+        conflicts: list[str] = []
+        if (
+            self.text_extraction_mode == "ocr"
+            and self.ocr_backend != "mock"
+            and self.ocr_device.strip().lower() != "cpu"
+        ):
+            conflicts.append("WIKI_HAMI_OCR_DEVICE")
+        if (
+            self.figure_table_backend != "mock"
+            and self.figure_table_device.strip().lower() != "cpu"
+        ):
+            conflicts.append("WIKI_HAMI_FIGURE_TABLE_DEVICE")
+        if (
+            self.stamp_signature_backend != "mock"
+            and self.stamp_signature_device.strip().lower() != "cpu"
+        ):
+            conflicts.append("WIKI_HAMI_STAMP_SIGNATURE_DEVICE")
+
+        if conflicts:
+            names = ", ".join(conflicts)
+            raise ValueError(
+                "WIKI_HAMI_MODEL_RUNTIME=cpu requires active in-process model devices "
+                f"to be cpu; update: {names}"
+            )
+        return self
 
 
 @lru_cache

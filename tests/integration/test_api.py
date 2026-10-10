@@ -296,3 +296,33 @@ async def test_invalid_page_rejects_document_before_module_execution():
             data={"document_id": "doc_invalid"},
         )
     assert response.status_code == 422
+
+
+async def test_job_cancel_marks_failed_and_revokes_task(monkeypatch):
+    from app.api.v1.endpoints import jobs as jobs_endpoint
+
+    revoked = []
+    callbacks = []
+    job_id = "cancel-job"
+    get_job_store().create(job_id, "cancel-doc")
+    get_job_store().update(job_id, status="processing")
+
+    monkeypatch.setattr(
+        jobs_endpoint.celery_app.control,
+        "revoke",
+        lambda task_id, terminate, signal: revoked.append((task_id, terminate, signal)),
+    )
+    monkeypatch.setattr(
+        jobs_endpoint,
+        "_deliver_terminal_callback",
+        lambda jid, document_id, payload: callbacks.append(payload),
+    )
+
+    async with api_client() as client:
+        response = await client.delete(f"/api/v1/jobs/{job_id}")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["error"]["code"] == "CANCELLED"
+    assert revoked == [(job_id, True, "SIGTERM")]
+    assert callbacks[0]["error"]["code"] == "CANCELLED"

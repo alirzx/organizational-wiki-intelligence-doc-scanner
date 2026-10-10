@@ -149,3 +149,18 @@ async def test_orchestrator_executes_only_selected_module(selected_module):
     assert set(response.pages[0].modules) == {selected_module}
     for module, service in services.items():
         assert service.run.await_count == (1 if module == selected_module else 0)
+
+
+def test_vlm_ocr_uses_dedicated_module_timeout():
+    settings = Settings(
+        _env_file=None,
+        text_extraction_mode="vlm",
+        module_timeout_seconds=30,
+        vlm_module_timeout_seconds=1200,
+        ocr_backend="mock",
+        figure_table_backend="mock",
+        stamp_signature_backend="mock",
+    )
+    orchestrator = ExtractionOrchestrator(settings)
+    assert orchestrator._module_timeout(ModuleName.OCR) == 1200
+    assert orchestrator._module_timeout(ModuleName.FIGURE_TABLE) == 30

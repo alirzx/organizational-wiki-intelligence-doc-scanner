@@ -1,128 +1,81 @@
 # Production Deployment
 
-Wiki Hami runs API and worker from the same image; Streamlit is optional.
+Root Compose runs API, worker, optional UI, and an isolated Ollama service.
+Redis, MinIO, Backend, and network `wikio` remain shared infrastructure.
 
-```text
-Backend
-  -> FastAPI /extract/minio
-       -> Redis queue
-            -> Celery worker
-                 -> three extraction modules
-                 -> MinIO artifacts
-                 -> Backend callback
-```
+## Text extraction selection
 
-## Required services
-
-- `api` — request validation, durable job creation, job-status API
-- `worker` — Celery extraction consumer and callback sender
-- `ui` — optional internal engineering console
-- external/shared Redis
-- external/shared MinIO
-- external Docker network `wikio`
-
-A running worker is mandatory for production. API-only deployment can accept jobs but cannot process them.
-
-## Configuration
-
-Use `.env.example` as the setting reference. Production requires real model backends, MinIO credentials, Redis URLs, Backend API key, callback URL, and callback token.
-
-Core values:
+VLM:
 
 ```env
-WIKI_HAMI_OCR_BACKEND=paddle  # or bina_rizeh for the Persian-focused Bina page pipeline
-WIKI_HAMI_OCR_ENABLE_MKLDNN=false
-WIKI_HAMI_OCR_DEVICE=gpu:0
-WIKI_HAMI_FIGURE_TABLE_BACKEND=pp_doclayout
-WIKI_HAMI_FIGURE_TABLE_DEVICE=gpu:0
-WIKI_HAMI_STAMP_SIGNATURE_BACKEND=rfdetr
-WIKI_HAMI_STAMP_SIGNATURE_DEVICE=cuda:0
-
-WIKI_HAMI_MAX_PAGES_PER_DOCUMENT=200
-WIKI_HAMI_MODULE_TIMEOUT_SECONDS=360
-
-WIKI_HAMI_MINIO_ENABLED=true
-WIKI_HAMI_MINIO_ENDPOINT=minio:9000
-WIKI_HAMI_MINIO_PUBLIC_BASE_URL=http://minio:9000
-WIKI_HAMI_MINIO_BUCKET=media
-
-WIKI_HAMI_CELERY_BROKER_URL=redis://redis:6379/0
-WIKI_HAMI_CELERY_RESULT_BACKEND=redis://redis:6379/1
-WIKI_HAMI_CELERY_QUEUE=wiki_hami_extraction
-WIKI_HAMI_JOB_STORE_REDIS_URL=redis://redis:6379/2
-
-WIKI_HAMI_BACKEND_API_KEY=<secret>
-WIKI_HAMI_CALLBACK_URL=http://<backend-service>:8000/api/documents/ai/callback/
-WIKI_HAMI_CALLBACK_TOKEN=<secret>
-WIKI_HAMI_CALLBACK_TIMEOUT_SECONDS=15
-WIKI_HAMI_CALLBACK_MAX_ATTEMPTS=3
+WIKI_HAMI_TEXT_EXTRACTION_MODE=vlm
+WIKI_HAMI_VLM_MODEL_ID=deepseek-ocr:latest
+WIKI_HAMI_VLM_BASE_URL=http://ollama:11434
 ```
 
-Use the actual Backend DNS alias reachable from the worker.
+Paddle:
 
-Pinned OCR runtime:
-
-```text
-PaddlePaddle 3.2.2
-PaddleOCR    3.7.0
-PaddleX      3.7.2
+```env
+WIKI_HAMI_TEXT_EXTRACTION_MODE=ocr
+WIKI_HAMI_OCR_BACKEND=paddle
 ```
+
+Bina:
+
+```env
+WIKI_HAMI_TEXT_EXTRACTION_MODE=ocr
+WIKI_HAMI_OCR_BACKEND=bina_rizeh
+```
+
+## Runtime profiles
+
+GPU scanner:
+
+```env
+WIKI_HAMI_MODEL_RUNTIME=gpu
+WIKI_HAMI_CONTAINER_RUNTIME=nvidia
+WIKI_HAMI_NVIDIA_VISIBLE_DEVICES=all
+```
+
+CPU scanner:
+
+```env
+WIKI_HAMI_MODEL_RUNTIME=cpu
+WIKI_HAMI_CONTAINER_RUNTIME=runc
+WIKI_HAMI_NVIDIA_VISIBLE_DEVICES=none
+WIKI_HAMI_OCR_DEVICE=cpu
+WIKI_HAMI_FIGURE_TABLE_DEVICE=cpu
+WIKI_HAMI_STAMP_SIGNATURE_DEVICE=cpu
+```
+
+Ollama has independent CPU/GPU runtime variables in `.env.example`.
 
 ## Start / update
 
-Current root Compose (GPU profile requires verified official wheel indexes in `.env`):
-
 ```bash
+docker compose config
 docker compose up -d --build
 docker compose ps
 ```
 
-Production-image Compose:
+The one-shot `ollama-model-init` service checks the persistent
+`wiki_hami_ollama_models` volume and pulls the selected VLM model only when it
+is absent.
+
+Verify:
 
 ```bash
-docker compose -f deployment/compose.prod.yaml up -d
-```
-
-The worker command is `python run.py --worker`; it consumes the configured extraction queue with concurrency `1`.
-
-When requirements change, rebuild the image before recreating API/worker so the new dependency pins are installed.
-For the portable CPU profile, set every model device to `cpu` and run
-`WIKI_HAMI_MODEL_RUNTIME=cpu docker compose -f compose.yaml -f compose.cpu.yaml up -d --build`.
-
-## Verify
-
-```bash
-docker compose ps
-docker compose logs --tail=100 worker
+docker compose logs ollama-model-init
+docker compose exec -T ollama ollama list
 docker compose exec -T worker celery -A app.jobs.celery_app:celery_app inspect ping
-docker compose exec -T worker getent hosts redis
-docker compose exec -T worker getent hosts minio
 ```
 
-Runtime verification after the OCR compatibility update:
+Then submit one real Front/Backend document and confirm
+`queued -> processing -> completed`, callback delivery, and expected MinIO
+artifacts.
 
-```bash
-docker compose exec -T worker python - <<'PY'
-import paddle, paddleocr, paddlex
-from app.core.config import get_settings
-s = get_settings()
-print("paddle:", paddle.__version__)
-print("paddleocr:", paddleocr.__version__)
-print("paddlex:", paddlex.__version__)
-print("ocr_enable_mkldnn:", s.ocr_enable_mkldnn)
-print("module_timeout:", s.module_timeout_seconds)
-print("callback_timeout:", s.callback_timeout_seconds)
-PY
-```
+The GitLab CI definition is unchanged. It continues to copy the production env
+file and run root Compose. The production env must therefore use
+`WIKI_HAMI_VLM_BASE_URL=http://ollama:11434` when VLM mode is selected.
 
-Then submit one real Front/Backend document and confirm:
-
-```text
-queued -> processing -> completed
-callback_delivered=true
-Backend document status=ready
-```
-
-The successful callback uses top-level `result`; the AI job-status endpoint uses `outputs`.
-
-For the full deployment/triage procedure see [`docs/deployment.md`](../docs/deployment.md). For request/callback details see [`docs/backend-async-contract.md`](../docs/backend-async-contract.md).
+See [docs/deployment.md](../docs/deployment.md) for the full runbook.

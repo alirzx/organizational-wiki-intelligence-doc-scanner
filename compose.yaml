@@ -1,15 +1,121 @@
+x-scanner-environment: &scanner-environment
+  HF_HOME: /app/.cache/huggingface
+  PADDLE_HOME: /app/.cache/paddle
+  PADDLE_PDX_CACHE_HOME: /app/.cache/paddlex
+  PADDLE_PDX_MODEL_SOURCE: HUGGINGFACE
+  NVIDIA_VISIBLE_DEVICES: "${WIKI_HAMI_NVIDIA_VISIBLE_DEVICES:-all}"
+  WIKI_HAMI_VLM_BASE_URL: "${WIKI_HAMI_VLM_BASE_URL:-http://ollama:11434}"
+  OMP_NUM_THREADS: "${WIKI_HAMI_CPU_OMP_NUM_THREADS:-1}"
+  OPENBLAS_NUM_THREADS: "${WIKI_HAMI_CPU_BLAS_NUM_THREADS:-1}"
+  MKL_NUM_THREADS: "${WIKI_HAMI_CPU_MKL_NUM_THREADS:-1}"
+  NUMEXPR_NUM_THREADS: "${WIKI_HAMI_CPU_NUMEXPR_NUM_THREADS:-1}"
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "${WIKI_HAMI_LOG_MAX_SIZE:-20m}"
+    max-file: "${WIKI_HAMI_LOG_MAX_FILES:-3}"
+
 services:
-  api:
-    build:
-      context: .
-    image: wiki-hami-extraction:0.2.0
+  ollama:
+    image: "${WIKI_HAMI_OLLAMA_IMAGE:-ollama/ollama:0.40.0}"
+    runtime: "${WIKI_HAMI_OLLAMA_CONTAINER_RUNTIME:-nvidia}"
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_MODELS: /root/.ollama/models
+      OLLAMA_KEEP_ALIVE: "${WIKI_HAMI_OLLAMA_KEEP_ALIVE:-30s}"
+      OLLAMA_MAX_LOADED_MODELS: "${WIKI_HAMI_OLLAMA_MAX_LOADED_MODELS:-1}"
+      OLLAMA_NUM_PARALLEL: "${WIKI_HAMI_OLLAMA_NUM_PARALLEL:-1}"
+      OLLAMA_MAX_QUEUE: "${WIKI_HAMI_OLLAMA_MAX_QUEUE:-2}"
+      OLLAMA_MAX_TRANSFER_STREAMS: "${WIKI_HAMI_OLLAMA_MAX_TRANSFER_STREAMS:-1}"
+      OLLAMA_CONTEXT_LENGTH: "${WIKI_HAMI_VLM_CONTEXT_SIZE:-4096}"
+      OLLAMA_NOHISTORY: "1"
+      OLLAMA_NO_CLOUD: "1"
+      GOMAXPROCS: "${WIKI_HAMI_OLLAMA_GOMAXPROCS:-2}"
+      LLAMA_ARG_CACHE_RAM: "${WIKI_HAMI_OLLAMA_CACHE_RAM_MB:-512}"
+      NVIDIA_VISIBLE_DEVICES: "${WIKI_HAMI_OLLAMA_NVIDIA_VISIBLE_DEVICES:-all}"
+    volumes:
+      - wiki_hami_ollama_models:/root/.ollama
+    expose:
+      - "11434"
+    mem_limit: "${WIKI_HAMI_OLLAMA_MEMORY_LIMIT:-12g}"
+    mem_reservation: "${WIKI_HAMI_OLLAMA_MEMORY_RESERVATION:-8g}"
+    memswap_limit: "${WIKI_HAMI_OLLAMA_MEMORY_SWAP_LIMIT:-12g}"
+    cpus: "${WIKI_HAMI_OLLAMA_CPUS:-2.0}"
+    pids_limit: ${WIKI_HAMI_OLLAMA_PIDS_LIMIT:-384}
+    init: true
+    logging: *default-logging
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "OLLAMA_HOST=http://127.0.0.1:11434 ollama list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - wikio
+
+  ollama-model-init:
+    image: "${WIKI_HAMI_OLLAMA_IMAGE:-ollama/ollama:0.40.0}"
     env_file:
       - .env
     environment:
-      HF_HOME: /app/.cache/huggingface
-      PADDLE_HOME: /app/.cache/paddle
-      PADDLE_PDX_CACHE_HOME: /app/.cache/paddlex
-      PADDLE_PDX_MODEL_SOURCE: HUGGINGFACE
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: "${WIKI_HAMI_VLM_MODEL_ID:-deepseek-ocr:latest}"
+      TEXT_EXTRACTION_MODE: "${WIKI_HAMI_TEXT_EXTRACTION_MODE:-vlm}"
+      MODEL_STORE_MAX_MB: "${WIKI_HAMI_OLLAMA_MODEL_STORE_MAX_MB:-16384}"
+    volumes:
+      - wiki_hami_ollama_models:/root/.ollama
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        if [ "$$TEXT_EXTRACTION_MODE" != "vlm" ]; then
+          echo "Classic OCR selected; skipping Ollama model pull."
+          exit 0
+        fi
+        current_mb="$$(du -sm /root/.ollama 2>/dev/null | awk '{print $$1}')"
+        current_mb="$${current_mb:-0}"
+        if [ "$$current_mb" -gt "$$MODEL_STORE_MAX_MB" ]; then
+          echo "Ollama model store is already $${current_mb}MB, above configured cap $${MODEL_STORE_MAX_MB}MB." >&2
+          exit 1
+        fi
+        if ollama show "$$OLLAMA_MODEL" >/dev/null 2>&1; then
+          echo "Ollama model $$OLLAMA_MODEL already exists in the persistent project volume."
+        else
+          echo "Pulling Ollama model $$OLLAMA_MODEL ..."
+          ollama pull "$$OLLAMA_MODEL"
+        fi
+        final_mb="$$(du -sm /root/.ollama 2>/dev/null | awk '{print $$1}')"
+        final_mb="$${final_mb:-0}"
+        if [ "$$final_mb" -gt "$$MODEL_STORE_MAX_MB" ]; then
+          echo "Ollama model store reached $${final_mb}MB, above configured cap $${MODEL_STORE_MAX_MB}MB." >&2
+          exit 1
+        fi
+    mem_limit: "${WIKI_HAMI_OLLAMA_INIT_MEMORY_LIMIT:-1g}"
+    memswap_limit: "${WIKI_HAMI_OLLAMA_INIT_MEMORY_SWAP_LIMIT:-1g}"
+    cpus: "${WIKI_HAMI_OLLAMA_INIT_CPUS:-1.0}"
+    pids_limit: ${WIKI_HAMI_OLLAMA_INIT_PIDS_LIMIT:-128}
+    init: true
+    logging: *default-logging
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - wikio
+
+  api:
+    build:
+      context: .
+      args:
+        MODEL_RUNTIME: "${WIKI_HAMI_MODEL_RUNTIME:-gpu}"
+    image: wiki-hami-extraction:0.2.0
+    runtime: "${WIKI_HAMI_CONTAINER_RUNTIME:-nvidia}"
+    env_file:
+      - .env
+    environment:
+      <<: *scanner-environment
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
@@ -17,13 +123,16 @@ services:
       - wiki_hami_model_cache:/app/.cache
       - ./data/outputs:/app/data/outputs
     shm_size: "2gb"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    mem_limit: "${WIKI_HAMI_API_MEMORY_LIMIT:-1g}"
+    mem_reservation: "${WIKI_HAMI_API_MEMORY_RESERVATION:-256m}"
+    memswap_limit: "${WIKI_HAMI_API_MEMORY_SWAP_LIMIT:-1g}"
+    cpus: "${WIKI_HAMI_API_CPUS:-0.5}"
+    pids_limit: ${WIKI_HAMI_API_PIDS_LIMIT:-128}
+    init: true
+    logging: *default-logging
+    depends_on:
+      ollama-model-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/v1/health"]
@@ -36,25 +145,26 @@ services:
 
   worker:
     image: wiki-hami-extraction:0.2.0
+    runtime: "${WIKI_HAMI_CONTAINER_RUNTIME:-nvidia}"
     env_file:
       - .env
     environment:
-      HF_HOME: /app/.cache/huggingface
-      PADDLE_HOME: /app/.cache/paddle
-      PADDLE_PDX_CACHE_HOME: /app/.cache/paddlex
-      PADDLE_PDX_MODEL_SOURCE: HUGGINGFACE
+      <<: *scanner-environment
     command: python run.py --worker
     volumes:
       - wiki_hami_model_cache:/app/.cache
       - ./data/outputs:/app/data/outputs
     shm_size: "2gb"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    mem_limit: "${WIKI_HAMI_WORKER_MEMORY_LIMIT:-7g}"
+    mem_reservation: "${WIKI_HAMI_WORKER_MEMORY_RESERVATION:-3g}"
+    memswap_limit: "${WIKI_HAMI_WORKER_MEMORY_SWAP_LIMIT:-7g}"
+    cpus: "${WIKI_HAMI_WORKER_CPUS:-1.0}"
+    pids_limit: ${WIKI_HAMI_WORKER_PIDS_LIMIT:-256}
+    init: true
+    logging: *default-logging
+    depends_on:
+      ollama-model-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.jobs.celery_app:celery_app inspect ping -d celery@$$HOSTNAME --timeout=5 2>/dev/null | grep -q pong"]
@@ -74,6 +184,13 @@ services:
     command: streamlit run ui/streamlit_app.py --server.address 0.0.0.0 --server.port 8501
     ports:
       - "8501:8501"
+    mem_limit: "${WIKI_HAMI_UI_MEMORY_LIMIT:-512m}"
+    mem_reservation: "${WIKI_HAMI_UI_MEMORY_RESERVATION:-128m}"
+    memswap_limit: "${WIKI_HAMI_UI_MEMORY_SWAP_LIMIT:-512m}"
+    cpus: "${WIKI_HAMI_UI_CPUS:-0.25}"
+    pids_limit: ${WIKI_HAMI_UI_PIDS_LIMIT:-64}
+    init: true
+    logging: *default-logging
     depends_on:
       api:
         condition: service_healthy
@@ -85,6 +202,7 @@ services:
 
 volumes:
   wiki_hami_model_cache:
+  wiki_hami_ollama_models:
 
 networks:
   wikio:
