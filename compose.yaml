@@ -175,31 +175,6 @@ services:
     networks:
       - wikio
 
-  ui:
-    image: wiki-hami-extraction:0.2.0
-    env_file:
-      - .env
-    environment:
-      WIKI_HAMI_API_BASE: http://api:8000/api/v1
-    command: streamlit run ui/streamlit_app.py --server.address 0.0.0.0 --server.port 8501
-    ports:
-      - "8501:8501"
-    mem_limit: "${WIKI_HAMI_UI_MEMORY_LIMIT:-512m}"
-    mem_reservation: "${WIKI_HAMI_UI_MEMORY_RESERVATION:-128m}"
-    memswap_limit: "${WIKI_HAMI_UI_MEMORY_SWAP_LIMIT:-512m}"
-    cpus: "${WIKI_HAMI_UI_CPUS:-0.25}"
-    pids_limit: ${WIKI_HAMI_UI_PIDS_LIMIT:-64}
-    init: true
-    logging: *default-logging
-    depends_on:
-      api:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      disable: true
-    networks:
-      - wikio
-
 volumes:
   wiki_hami_model_cache:
   wiki_hami_ollama_models:
