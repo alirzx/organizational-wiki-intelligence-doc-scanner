@@ -139,8 +139,8 @@ def recover_native_text(
                     continue
                 raise
 
-        native_has_letters = sum(c.isalpha() for c in native_blob) > 30
-        if native_has_letters and not re.search(r"[\u4e00-\u9fff]", native_blob) and any(
+        native_has_letters = sum(c.isalpha() for c in native_text) > 30
+        if native_has_letters and not re.search(r"[\u4e00-\u9fff]", native_text) and any(
             re.search(r"[\u4e00-\u9fff]", line.text) for line in lines
         ):
             if covered_area(source_box, native.image_regions) >= 0.65:
