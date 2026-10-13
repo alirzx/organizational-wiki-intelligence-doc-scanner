@@ -179,7 +179,31 @@ class ArtifactPublisher:
                     page_counts[obj.type.value] += 1
                     document_counts[obj.type.value] += 1
 
-            page_objects.sort(key=cls._reading_order_key)
+            native_paragraphs = [
+                item for item in page_objects
+                if item["type"] == "paragraph" and item["metadata"].get("text_extraction_mode") in {"pdf_text", "pdf_hybrid"}
+            ]
+            native_page = bool(native_paragraphs) and len(native_paragraphs) == page_counts["paragraph"]
+            if native_page:
+                native_paragraphs.sort(key=lambda item: item["metadata"]["ocr_reading_order"])
+
+                def native_order(item):
+                    if item in native_paragraphs:
+                        return item["metadata"]["ocr_reading_order"], 1, 0
+                    box = item["bbox"]
+                    nearest = min(native_paragraphs, key=lambda paragraph: (
+                        abs(paragraph["bbox"]["y1"] - box["y1"])
+                        + abs(paragraph["bbox"]["x1"] - box["x1"])
+                    ))
+                    return (
+                        nearest["metadata"]["ocr_reading_order"],
+                        0 if box["y1"] <= nearest["bbox"]["y1"] else 2,
+                        box["y1"],
+                    )
+
+                page_objects.sort(key=native_order)
+            else:
+                page_objects.sort(key=cls._reading_order_key)
             for reading_order, obj in enumerate(page_objects, start=1):
                 obj["reading_order"] = reading_order
 
@@ -194,7 +218,9 @@ class ArtifactPublisher:
                     "coordinate_space": image["source_coordinate_space"],
                     "image": image,
                     "transform": transform,
-                    "reading_order_method": "bbox_top_to_bottom_then_left_to_right",
+                    "reading_order_method": (
+                        "pdf_text_order" if native_page else "bbox_top_to_bottom_then_left_to_right"
+                    ),
                     "object_count": len(page_objects),
                     "object_counts": page_counts,
                     "objects": page_objects,
@@ -269,7 +295,7 @@ class ArtifactPublisher:
                     written.append(crop_key)
 
         aggregate_key = f"{document_prefix}/OCR.txt"
-        aggregate_text = "\n\n".join(text for text in aggregate_ocr_pages if text).strip()
+        aggregate_text = "\f".join(aggregate_ocr_pages)
         if aggregate_text:
             aggregate_text += "\n"
         self.storage.put_text(aggregate_key, aggregate_text)

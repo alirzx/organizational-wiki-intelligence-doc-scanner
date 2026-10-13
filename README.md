@@ -212,6 +212,11 @@ make install-models MODEL_RUNTIME=gpu
 
 The Docker build uses the same `WIKI_HAMI_MODEL_RUNTIME=cpu|gpu` selection.
 
+The API and worker image excludes Streamlit. To run the optional local UI,
+install `python -m pip install -r requirements-ui.txt` (also included in
+`requirements-dev.txt`). Paddle and Torch remain required for classic OCR
+fallback, layout detection, and stamp/signature detection when enabled.
+
 Local processes:
 
 ```bash
@@ -346,3 +351,19 @@ own diagnostic file on repeat requests. OCR pages run serially in VLM mode so
 waiting behind the single OCR executor does not consume other pages' module
 timeouts. Successful document artifacts are published only after every page
 has a valid result; an unreadable page is never silently omitted.
+
+Rejected VLM regions (empty, repetitive, or token-limited output) are split into
+two smaller horizontal crops near low-ink rows and retried, up to two subdivision
+levels. Only complete responses are merged in page reading order. Unrecoverable
+regions still use the configured whole-page and classic OCR recovery paths.
+
+### Native PDF text quality
+
+MinIO page requests can include a `native_text` object containing matching
+`page_number`, source-image `width`/`height`, and ordered `{text, bbox}` blocks.
+Optional `ignored_regions` describe page furniture; `image_regions` describe
+embedded illustrations. Page identity and geometry are validated. Independent
+Paddle detection checks coverage. Missing regions are recovered with OCR without
+replacing verified source paragraphs. Unreadable embedded image text produces
+an explicit warning while retaining the image. Aggregate text uses form-feed
+page boundaries, including empty pages.

@@ -166,6 +166,9 @@ _BREAK_PRESENTATION_TAG_RE = re.compile(
 _NONE_PLACEHOLDER_RE = re.compile(r"^(?:None\s*){2,}$", re.IGNORECASE)
 _ESCAPED_LEADING_MARKER_RE = re.compile(r"(?m)^\s*\\[*_`]+\s*")
 _TOKEN_ONLY_DEBRIS_RE = re.compile(r"^[\\|<>/_* -]{1,32}$")
+_MALFORMED_PIPE_TOKEN_RE = re.compile(r"<\s*/?\s*\|[^<>\n]{1,80}>|\|[^|<>\n]{1,80}\|>")
+_MODEL_MODIFIER_RE = re.compile(r"\\modifier\{[^{}]*\}")
+_ESCAPED_NUMBER_RE = re.compile(r"^\\[0-9]+$")
 _EXCESS_BLANK_LINES_RE = re.compile(r"\n{3,}")
 
 _PERSIAN_SCRIPT_RE = re.compile(r"[\u0600-\u06FF]")
@@ -202,7 +205,8 @@ _VISUAL_DESCRIPTION_WORDS = frozenset(
     structure roof sky cloud clouds truck trucks flower flowers poppies petals grass
     foliage fuel pump pumps camera color colors red white blue visible depicts displays
     appears icon icons flame flames smoke design designs gesture hand fingers sunlight
-    window windows tank facility hills landscape drawing caption
+    window windows tank facility hills landscape drawing caption backdrop mountains
+    cliffs vegetation photograph photograph situated clouds poppies field
     """.split()
 )
 
@@ -235,7 +239,11 @@ def _looks_like_generated_image_description(
 
     # Covers terse visual captions such as the fire-icon and red-poppies examples
     # observed in production while leaving ordinary English headings/body text alone.
-    return len(words) >= 8 and _visual_description_score(value) >= 4
+    return (
+        len(words) >= 8 and _visual_description_score(value) >= 4
+        or re.match(r"^(?:fig[:.]\s*\d+[A-Za-z]?\s*)?(?:(?:a|the)\s+)?(?:field|facility)\b", value, re.I)
+        and _visual_description_score(value) >= 3
+    )
 
 
 def _strip_control_tokens_from_line(value: str) -> tuple[str, int]:
@@ -248,6 +256,8 @@ def _strip_control_tokens_from_line(value: str) -> tuple[str, int]:
     cleaned = _ANGLE_PIPE_TOKEN_RE.sub("", value)
     cleaned = _BARE_PIPE_TOKEN_RE.sub("", cleaned)
     cleaned = _XML_ROLE_TOKEN_RE.sub("", cleaned)
+    cleaned = _MALFORMED_PIPE_TOKEN_RE.sub("", cleaned)
+    cleaned = _MODEL_MODIFIER_RE.sub("", cleaned)
     cleaned = _ROLE_PREFIX_RE.sub("", cleaned)
     cleaned = cleaned.strip()
 
@@ -293,6 +303,7 @@ def strip_vlm_artifacts(value: str) -> str:
             _PDF_TOOL_RE.match(line)
             or _META_MARKER_RE.match(line)
             or _GROUNDING_IMAGE_RE.match(line)
+            or line.lower() == "image"
         ):
             processed_lines.append("")
             continue
@@ -300,6 +311,8 @@ def strip_vlm_artifacts(value: str) -> str:
         line, _ = _strip_control_tokens_from_line(line)
         line = _ESCAPED_LEADING_MARKER_RE.sub("", line).strip()
         if _NONE_PLACEHOLDER_RE.fullmatch(line):
+            line = ""
+        if _ESCAPED_NUMBER_RE.fullmatch(line):
             line = ""
         processed_lines.append(line)
 

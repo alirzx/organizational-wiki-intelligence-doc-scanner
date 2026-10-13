@@ -7,6 +7,7 @@ from app.modules.ocr.adapter import lines_to_detected_objects
 from app.modules.ocr.backend import MockOCRBackend, create_ocr_backend
 from app.modules.ocr.deepseek_ocr_vlm_backend import DeepSeekOCRVLMBackend, VLMQualityError, VLMTransportError
 from app.modules.ocr.paddle_backend import PaddleOCRBackend
+from app.modules.ocr.native_recovery import recover_native_text
 from app.modules.ocr.text_normalization import normalize_persian_ocr_text
 from app.modules.ocr.vlm_postprocessing import clean_vlm_lines
 from app.preprocessing.transforms import restore_bbox_to_source
@@ -16,6 +17,12 @@ from app.schemas.detection import DetectedObject, ObjectType, Provenance
 from app.schemas.extraction import ModulePageResponse
 from app.schemas.status import ModuleName, ModuleStatus, ProcessingState
 from app.utils.ids import new_object_id
+
+
+class UnreadableTextRegionsError(VLMQualityError):
+    def __init__(self, boxes):
+        super().__init__("Text regions were detected but neither OCR backend could read them")
+        self.boxes = boxes
 
 
 class OCRService:
@@ -94,7 +101,8 @@ class OCRService:
             self._fallback = PaddleOCRBackend(self.settings)
         lines = self._fallback.predict(image)
         if not lines and self._fallback.last_detection_count:
-            raise VLMQualityError("Text regions were detected but neither OCR backend could read them")
+            boxes = getattr(self._fallback, "last_detection_boxes", [])
+            raise UnreadableTextRegionsError(boxes if isinstance(boxes, list) else [])
         lines = [
             replace(
                 line,
@@ -179,4 +187,31 @@ class OCRService:
             transform=page.transform,
             objects=objects,
             status=status,
+        )
+
+    async def run_with_native_text(self, page, request_id, figures):
+        started = perf_counter()
+
+        def predict():
+            if self._fallback is None:
+                self._fallback = PaddleOCRBackend(self.settings)
+            return recover_native_text(page, self._fallback, self._backend, figures)
+
+        objects, warnings = await run_blocking(BlockingPool.OCR, predict)
+        return ModulePageResponse(
+            schema_version=self.settings.schema_version,
+            request_id=request_id,
+            document_id=page.document_id,
+            page_id=page.page_id,
+            page_number=page.page_number,
+            module=ModuleName.OCR,
+            image=page.image_metadata,
+            transform=page.transform,
+            objects=objects,
+            status=ModuleStatus(
+                module=ModuleName.OCR, state=ProcessingState.SUCCESS,
+                duration_ms=(perf_counter() - started) * 1000,
+                backend="pdf_text", model_id="pdf-text-layer",
+                warnings=warnings + ([] if objects else ["no_text_detected"]),
+            ),
         )

@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from app.schemas.common import BBox
 
 
 MODULE_REQUEST_EXAMPLE = {
@@ -24,12 +25,36 @@ class ModuleImageRequest(BaseModel):
     page_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class NativeTextBlock(BaseModel):
+    text: str = Field(min_length=1, max_length=100000)
+    bbox: BBox
+
+
+class NativeTextPage(BaseModel):
+    page_number: int = Field(ge=1)
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    blocks: list[NativeTextBlock] = Field(default_factory=list, max_length=10000)
+    ignored_regions: list[BBox] = Field(default_factory=list, max_length=100)
+    image_regions: list[BBox] = Field(default_factory=list, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_geometry(self):
+        for box in [block.bbox for block in self.blocks] + self.ignored_regions + self.image_regions:
+            if box.width <= 0 or box.height <= 0:
+                raise ValueError("native text block must have non-empty geometry")
+            if box.x2 > self.width or box.y2 > self.height:
+                raise ValueError("native text block must lie inside its source page")
+        return self
+
+
 class MinioPageRequest(BaseModel):
     image_url: str = Field(min_length=1)
     page_number: int | None = Field(default=None, ge=1)
     page_id: str | None = None
     filename: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    native_text: NativeTextPage | None = None
 
 
 class MinioDocumentRequest(BaseModel):
@@ -69,6 +94,8 @@ class MinioDocumentRequest(BaseModel):
         page_ids: set[str] = set()
         for index, page in enumerate(self.pages, start=1):
             number = page.page_number or index
+            if page.native_text is not None and page.native_text.page_number != number:
+                raise ValueError("native text page_number does not match its image")
             page_id = page.page_id or f"{document_id}:p{number}"
             if number in page_numbers:
                 raise ValueError(f"duplicate page_number: {number}")

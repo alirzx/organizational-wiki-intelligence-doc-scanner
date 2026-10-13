@@ -162,8 +162,8 @@ def test_region_failure_never_returns_partial_page(monkeypatch):
     b = DeepSeekOCRVLMBackend(
         Settings(_env_file=None, text_extraction_mode="vlm", vlm_diagnostics_dir="", vlm_crop_margins=False)
     )
-    responses = iter(["بخش بالا", "", "بخش پایین"])
-    monkeypatch.setattr(b, "_request", lambda image, **kwargs: next(responses))
+    responses = iter(["بخش بالا", "", "بخش پایین", ""])
+    monkeypatch.setattr(b, "_request", lambda image, **kwargs: next(responses, ""))
     with pytest.raises(VLMQualityError):
         b.predict_regions(Image.new("RGB", (900, 600), "white"))
 

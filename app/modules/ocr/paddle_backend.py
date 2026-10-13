@@ -73,6 +73,7 @@ class PaddleOCRBackend:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.last_detection_count = 0
+        self.last_detection_boxes: list[BBox] = []
         self._model: Any | None = None
         self._init_lock = Lock()
         self._predict_lock = Lock()
@@ -120,10 +121,15 @@ class PaddleOCRBackend:
             results = list(model.predict(rgb))
 
         self.last_detection_count = 0
+        self.last_detection_boxes = []
         lines: list[OCRLine] = []
         for result in results:
             payload = _json_payload(result)
             detected = payload.get("dt_polys")
+            if detected is not None:
+                self.last_detection_boxes.extend(
+                    _bbox_from_box_or_polygon(None, polygon) for polygon in detected
+                )
             self.last_detection_count += len(detected) if detected is not None else len(payload.get("rec_texts") or [])
             texts = list(payload.get("rec_texts") or [])
             scores = list(payload.get("rec_scores") or [])

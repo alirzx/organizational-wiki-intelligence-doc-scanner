@@ -349,3 +349,58 @@ def test_region_requests_use_smaller_generation_budget(monkeypatch):
     monkeypatch.setattr(backend, "_request", request)
     backend.predict_regions(Image.new("RGB", (900, 600), "white"))
     assert budgets == [2048, 2048, 2048]
+
+
+def test_rejected_region_is_replaced_by_complete_subregions(monkeypatch):
+    from app.modules.ocr.deepseek_ocr_vlm_backend import VLMQualityError
+
+    backend = DeepSeekOCRVLMBackend(Settings(_env_file=None, vlm_crop_margins=False))
+    heights = []
+
+    def request(image, **kwargs):
+        heights.append(image.height)
+        if len(heights) == 1:
+            raise VLMQualityError("generation hit its token limit")
+        return f"complete region {len(heights)}"
+
+    monkeypatch.setattr(backend, "_request", request)
+    lines = backend.predict_regions(Image.new("RGB", (900, 1800), "white"))
+
+    assert heights == [600, 300, 300, 600, 600]
+    assert [line.text for line in lines] == [
+        "complete region 2", "complete region 3", "complete region 4", "complete region 5",
+    ]
+    assert [(line.bbox.y1, line.bbox.y2) for line in lines] == [
+        (0, 300), (300, 600), (600, 1200), (1200, 1800),
+    ]
+    assert [line.reading_order for line in lines] == [0, 1, 2, 3]
+
+
+def test_region_subdivision_is_bounded_and_never_returns_partial_text(monkeypatch):
+    backend = DeepSeekOCRVLMBackend(Settings(_env_file=None, vlm_crop_margins=False))
+    heights = []
+
+    def request(image, **kwargs):
+        heights.append(image.height)
+        return "abcdefghij" * 200
+
+    monkeypatch.setattr(backend, "_request", request)
+    with pytest.raises(RuntimeError, match="repeated"):
+        backend.predict_regions(Image.new("RGB", (900, 1800), "white"))
+    assert heights == [600, 300, 150]
+
+
+def test_transport_failure_does_not_trigger_region_subdivision(monkeypatch):
+    from app.modules.ocr.deepseek_ocr_vlm_backend import VLMTransportError
+
+    backend = DeepSeekOCRVLMBackend(Settings(_env_file=None, vlm_crop_margins=False))
+    calls = []
+
+    def request(image, **kwargs):
+        calls.append(image.size)
+        raise VLMTransportError("Ollama unavailable")
+
+    monkeypatch.setattr(backend, "_request", request)
+    with pytest.raises(VLMTransportError):
+        backend.predict_regions(Image.new("RGB", (900, 1800), "white"))
+    assert len(calls) == 1

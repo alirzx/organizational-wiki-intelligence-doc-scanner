@@ -106,8 +106,8 @@ def crop_document_margins(image: Image.Image) -> tuple[Image.Image, int, int]:
     return image.crop((left, top, right, bottom)), left, top
 
 
-def horizontal_regions(image: Image.Image) -> list[tuple[int, int, int, int]]:
-    """Split a page into three disjoint top-to-bottom OCR regions.
+def horizontal_regions(image: Image.Image, *, count: int = 3) -> list[tuple[int, int, int, int]]:
+    """Split a page into disjoint top-to-bottom OCR regions.
 
     Cuts are selected near the one-third positions at rows with minimal dark-pixel
     density. This preserves Persian/legal document reading flow and avoids the old
@@ -117,8 +117,8 @@ def horizontal_regions(image: Image.Image) -> list[tuple[int, int, int, int]]:
     import numpy as np
 
     width, height = image.size
-    if height < 192:
-        raise VLMQualityError("Image is too small for three-region OCR")
+    if count < 2 or height < count * 64:
+        raise VLMQualityError("Image is too small for region OCR")
 
     gray = np.asarray(image.convert("L"))
     # Ignore a thin strip at both side edges so page borders do not dominate the
@@ -129,8 +129,8 @@ def horizontal_regions(image: Image.Image) -> list[tuple[int, int, int, int]]:
     ink = (body < 160).sum(axis=1)
 
     cuts = [0]
-    for fraction in (1 / 3, 2 / 3):
-        center = int(height * fraction)
+    for index in range(1, count):
+        center = height * index // count
         radius = max(1, height // 20)
         start = max(cuts[-1] + 1, center - radius)
         end = min(height - 1, center + radius)
@@ -145,7 +145,7 @@ def horizontal_regions(image: Image.Image) -> list[tuple[int, int, int, int]]:
         cuts.append(cut)
     cuts.append(height)
 
-    return [(0, cuts[i], width, cuts[i + 1]) for i in range(3)]
+    return [(0, cuts[i], width, cuts[i + 1]) for i in range(count)]
 
 
 def column_regions(image: Image.Image) -> list[tuple[int, int, int, int]]:
@@ -476,8 +476,32 @@ class DeepSeekOCRVLMBackend:
                 logger.warning("Rejected VLM OCR; retrying fresh image request: %s", exc)
         raise AssertionError("unreachable")
 
+    def _predict_region(self, image: Image.Image, *, depth: int = 0) -> list[OCRLine]:
+        try:
+            content = self._request(
+                image,
+                prompt="\nExtract the text in the image.",
+                max_tokens=self.settings.vlm_region_max_tokens,
+            )
+            return parse_deepseek_output(
+                content, image_width=image.width, image_height=image.height,
+            )
+        except VLMQualityError as exc:
+            # Replace the entire rejected response; never append truncated text.
+            # Two subdivision levels cap each original region at seven requests.
+            # Transport failures propagate without multiplying network requests.
+            if depth >= 2 or image.height < 192:
+                raise
+            logger.warning("Rejected VLM region; subdividing at depth %s: %s", depth, exc)
+
+        output: list[OCRLine] = []
+        for box in horizontal_regions(image, count=2):
+            lines = self._predict_region(image.crop(box), depth=depth + 1)
+            output.extend(translate_lines(lines, box[0], box[1]))
+        return output
+
     def predict_regions(self, image: Image.Image) -> list[OCRLine]:
-        """Recover a difficult page using three independent top-to-bottom regions."""
+        """Read top to bottom, subdividing rejected regions before page fallback."""
         offset_x = offset_y = 0
         if self.settings.vlm_crop_margins:
             image, offset_x, offset_y = crop_document_margins(image)
@@ -485,10 +509,7 @@ class DeepSeekOCRVLMBackend:
         output: list[OCRLine] = []
         for box in horizontal_regions(image):
             region = image.crop(box)
-            content = self._request(region, prompt="\nExtract the text in the image.", max_tokens=self.settings.vlm_region_max_tokens)
-            lines = parse_deepseek_output(
-                content, image_width=region.width, image_height=region.height,
-            )
+            lines = self._predict_region(region)
             translated = translate_lines(
                 lines,
                 box[0] + offset_x,

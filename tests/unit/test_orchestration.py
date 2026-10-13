@@ -16,6 +16,54 @@ class FailingStampService:
         raise RuntimeError("test backend unavailable")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case, expected", [
+    ("figure", "success"),
+    ("table", "partial_success"),
+    ("low_confidence", "partial_success"),
+    ("uncovered_text", "partial_success"),
+    ("missing_geometry", "partial_success"),
+])
+async def test_unreadable_ocr_requires_confident_figure_coverage(case, expected):
+    from app.modules.ocr.service import UnreadableTextRegionsError
+    from app.schemas.common import BBox
+    from app.schemas.detection import ObjectType
+
+    settings = Settings(
+        _env_file=None, ocr_backend="mock", figure_table_backend="mock",
+        stamp_signature_backend="mock",
+    )
+    page = _page(settings)
+    orchestrator = ExtractionOrchestrator(settings)
+    layout = await orchestrator.figure_table.run(page, "req_figure")
+    figure = next(obj for obj in layout.objects if obj.type == ObjectType.FIGURE)
+    figure.bbox = BBox(x1=50, y1=50, x2=150, y2=150)
+    figure.confidence = 0.9
+    layout.objects = [figure]
+    boxes = [BBox(x1=60, y1=60, x2=140, y2=140)]
+    if case == "table":
+        figure.type = ObjectType.TABLE
+    elif case == "low_confidence":
+        figure.confidence = 0.7
+    elif case == "uncovered_text":
+        boxes.append(BBox(x1=200, y1=200, x2=250, y2=230))
+    elif case == "missing_geometry":
+        boxes = []
+    orchestrator.ocr.run = AsyncMock(side_effect=UnreadableTextRegionsError(boxes))
+    orchestrator.figure_table.run = AsyncMock(return_value=layout)
+    response = await orchestrator.extract_document(
+        document_id=page.document_id, pages=[page], request_id="req_figure",
+        document_metadata={},
+    )
+    assert response.processing.state == expected
+    assert figure in response.objects
+    if expected == "success":
+        assert "unreadable_figure_text_preserved_as_image" in response.processing.warnings
+        assert response.pages[0].modules[ModuleName.OCR].state == "success"
+    else:
+        assert response.pages[0].modules[ModuleName.OCR].state == "failed"
+
+
 def _page(settings: Settings, *, page_number: int = 1):
     image = Image.new("RGB", (300, 400), "white")
     buffer = BytesIO()

@@ -30,7 +30,10 @@ async def process_minio_payload(payload: MinioDocumentRequest) -> list[str]:
             page_id=item.page_id,
             page_number=item.page_number,
             filename=item.filename,
-            metadata=item.metadata,
+            metadata={
+                **item.metadata,
+                **({"_pdf_text": item.native_text.model_dump()} if item.native_text is not None else {}),
+            },
         )
         pages.append(
             await prepare_minio_page(
