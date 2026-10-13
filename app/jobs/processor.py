@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from app.api.v1.request_parsing import prepare_minio_page
+from app.api.v1.request_parsing import minio_page_descriptor, prepare_minio_page
 from app.core.blocking import BlockingPool, run_blocking
 from app.core.config import get_settings
 from app.core.runtime import get_artifact_publisher, get_extraction_orchestrator, get_minio_storage_service
-from app.schemas.image import PageDescriptor
 from app.schemas.status import ProcessingState
 from app.schemas.storage import MinioDocumentRequest
 from app.utils.ids import new_request_id
@@ -26,15 +25,7 @@ async def process_minio_payload(payload: MinioDocumentRequest) -> list[str]:
     storage = get_minio_storage_service()
     pages = []
     for index, item in enumerate(payload.pages, start=1):
-        descriptor = PageDescriptor(
-            page_id=item.page_id,
-            page_number=item.page_number,
-            filename=item.filename,
-            metadata={
-                **item.metadata,
-                **({"_pdf_text": item.native_text.model_dump()} if item.native_text is not None else {}),
-            },
-        )
+        descriptor = minio_page_descriptor(item)
         pages.append(
             await prepare_minio_page(
                 image_url=item.image_url,

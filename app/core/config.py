@@ -109,6 +109,9 @@ class Settings(BaseSettings):
     vlm_num_threads: int = Field(default=2, ge=1, le=64)
     vlm_repeat_penalty: float = Field(default=1.1, ge=1.0, le=2.0)
     vlm_quality_retries: int = Field(default=1, ge=0, le=2)
+    # Hard cap for recursive region OCR requests on one page. This keeps CPU
+    # deployments bounded even when pathological pages repeatedly fail quality checks.
+    vlm_region_max_requests: int = Field(default=21, ge=3, le=128)
 
     # Layout localization.
     figure_table_backend: str = "mock"
@@ -217,11 +220,11 @@ class Settings(BaseSettings):
             return self
 
         conflicts: list[str] = []
-        if (
-            self.text_extraction_mode == "ocr"
-            and self.ocr_backend != "mock"
-            and self.ocr_device.strip().lower() != "cpu"
-        ):
+        ocr_runtime_active = (
+            (self.text_extraction_mode == "ocr" and self.ocr_backend != "mock")
+            or self.text_extraction_mode == "vlm"
+        )
+        if ocr_runtime_active and self.ocr_device.strip().lower() != "cpu":
             conflicts.append("WIKI_HAMI_OCR_DEVICE")
         if (
             self.figure_table_backend != "mock"

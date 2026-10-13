@@ -14,6 +14,7 @@ from app.modules.ocr.deepseek_ocr_vlm_backend import (
     parse_deepseek_output,
 )
 from app.modules.ocr.paddle_backend import PaddleOCRBackend
+from app.modules.ocr.bina_rizeh_backend import BinaRizehOCRBackend
 
 
 def test_vlm_defaults_can_be_selected_explicitly():
@@ -51,6 +52,14 @@ def test_factory_can_switch_between_vlm_and_classic_ocr():
         ocr_device="cpu",
     )
     assert isinstance(create_ocr_backend(ocr_settings), PaddleOCRBackend)
+
+    bina_settings = Settings(
+        _env_file=None,
+        text_extraction_mode="ocr",
+        ocr_backend="bina_rizeh",
+        ocr_device="cpu",
+    )
+    assert isinstance(create_ocr_backend(bina_settings), BinaRizehOCRBackend)
 
 
 def test_grounding_parser_maps_coordinates_and_normalizes_persian():

@@ -476,7 +476,17 @@ class DeepSeekOCRVLMBackend:
                 logger.warning("Rejected VLM OCR; retrying fresh image request: %s", exc)
         raise AssertionError("unreachable")
 
-    def _predict_region(self, image: Image.Image, *, depth: int = 0) -> list[OCRLine]:
+    def _predict_region(
+        self,
+        image: Image.Image,
+        *,
+        depth: int = 0,
+        request_budget: list[int] | None = None,
+    ) -> list[OCRLine]:
+        if request_budget is not None:
+            if request_budget[0] <= 0:
+                raise VLMQualityError("DeepSeek-OCR region request budget exhausted")
+            request_budget[0] -= 1
         try:
             content = self._request(
                 image,
@@ -488,15 +498,19 @@ class DeepSeekOCRVLMBackend:
             )
         except VLMQualityError as exc:
             # Replace the entire rejected response; never append truncated text.
-            # Two subdivision levels cap each original region at seven requests.
-            # Transport failures propagate without multiplying network requests.
+            # Two subdivision levels remain the geometry bound; request_budget adds
+            # a deployment-configurable page-level latency bound.
             if depth >= 2 or image.height < 192:
                 raise
             logger.warning("Rejected VLM region; subdividing at depth %s: %s", depth, exc)
 
         output: list[OCRLine] = []
         for box in horizontal_regions(image, count=2):
-            lines = self._predict_region(image.crop(box), depth=depth + 1)
+            lines = self._predict_region(
+                image.crop(box),
+                depth=depth + 1,
+                request_budget=request_budget,
+            )
             output.extend(translate_lines(lines, box[0], box[1]))
         return output
 
@@ -507,9 +521,10 @@ class DeepSeekOCRVLMBackend:
             image, offset_x, offset_y = crop_document_margins(image)
 
         output: list[OCRLine] = []
+        request_budget = [self.settings.vlm_region_max_requests]
         for box in horizontal_regions(image):
             region = image.crop(box)
-            lines = self._predict_region(region)
+            lines = self._predict_region(region, request_budget=request_budget)
             translated = translate_lines(
                 lines,
                 box[0] + offset_x,

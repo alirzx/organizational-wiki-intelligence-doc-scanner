@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from app.schemas.common import BBox
 
 
@@ -28,6 +28,19 @@ class ModuleImageRequest(BaseModel):
 class NativeTextBlock(BaseModel):
     text: str = Field(min_length=1, max_length=100000)
     bbox: BBox
+
+    @field_validator("text")
+    @classmethod
+    def validate_native_text_content(cls, value: str) -> str:
+        # Native PDF text is preferred over OCR, so reject only clear extraction
+        # corruption here rather than silently assigning it source-level trust.
+        if not value.strip():
+            raise ValueError("native text block must contain non-whitespace text")
+        if "\ufffd" in value:
+            raise ValueError("native text block contains Unicode replacement characters")
+        if any(ord(char) < 32 and char not in {"\n", "\r", "\t"} for char in value):
+            raise ValueError("native text block contains unsupported control characters")
+        return value
 
 
 class NativeTextPage(BaseModel):

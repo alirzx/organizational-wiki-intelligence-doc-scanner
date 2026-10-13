@@ -50,7 +50,7 @@ def missing_text_regions(page, native, detections, figures):
     return missing
 
 
-def native_text_objects(page, native_data, detections, recognized_lines, figures):
+def native_text_objects(page, native_data, detections, figures):
     native = NativeTextPage.model_validate(native_data)
     if native.page_number != page.page_number or (
         native.width != page.image_metadata.source_width
@@ -70,7 +70,12 @@ def native_text_objects(page, native_data, detections, recognized_lines, figures
             text=normalize_persian_ocr_text(block.text),
             raw_text=block.text,
             confidence=1.0,
-            metadata={"text_extraction_mode": "pdf_text", "ocr_reading_order": order},
+            metadata={
+                "text_extraction_mode": "pdf_text",
+                "ocr_reading_order": order,
+                "confidence_source": "native_pdf_layer",
+                "confidence_semantics": "source_layer_not_ocr_probability",
+            },
             provenance=Provenance(module=ModuleName.OCR, backend="pdf_text", model_id="pdf-text-layer"),
         )
         for order, block in enumerate(native.blocks, start=1)

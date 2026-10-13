@@ -295,7 +295,9 @@ class ArtifactPublisher:
                     written.append(crop_key)
 
         aggregate_key = f"{document_prefix}/OCR.txt"
-        aggregate_text = "\f".join(aggregate_ocr_pages)
+        # Preserve the public artifact contract used by downstream consumers:
+        # aggregate non-empty pages with blank-line separators.
+        aggregate_text = "\n\n".join(text for text in aggregate_ocr_pages if text).strip()
         if aggregate_text:
             aggregate_text += "\n"
         self.storage.put_text(aggregate_key, aggregate_text)

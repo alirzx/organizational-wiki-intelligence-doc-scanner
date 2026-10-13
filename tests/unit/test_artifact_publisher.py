@@ -39,17 +39,17 @@ def _settings():
     )
 
 
-def _page(settings: Settings):
+def _page(settings: Settings, *, page_number: int = 1):
     image = Image.new("RGB", (800, 1000), "white")
     buffer = BytesIO()
     image.save(buffer, format="PNG")
     return prepare_page(
         data=buffer.getvalue(),
-        filename="page-001.png",
+        filename=f"page-{page_number:03d}.png",
         mime_type="image/png",
         document_id="123",
-        page_id="123:p1",
-        page_number=1,
+        page_id=f"123:p{page_number}",
+        page_number=page_number,
         page_metadata={},
         settings=settings,
     )
@@ -179,3 +179,20 @@ async def test_visual_modules_still_write_raw_page_json_when_no_objects_are_dete
         "signature": 0,
     }
     assert [obj["type"] for obj in layout["pages"][0]["objects"]] == ["paragraph"]
+
+
+@pytest.mark.asyncio
+async def test_aggregate_ocr_text_preserves_legacy_blank_line_page_contract():
+    settings = _settings()
+    run = await ExtractionOrchestrator(settings).extract_document_run(
+        document_id="123",
+        pages=[_page(settings, page_number=1), _page(settings, page_number=2)],
+        request_id="req-artifacts-pages",
+        document_metadata={"source": "minio"},
+    )
+    storage = RecordingStorage()
+    ArtifactPublisher(storage).publish(run)
+
+    aggregate = storage.text["documents/123/OCR.txt"][0]
+    assert "\f" not in aggregate
+    assert aggregate == "MOCK_OCR_TEXT\n\nMOCK_OCR_TEXT\n"

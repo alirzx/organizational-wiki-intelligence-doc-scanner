@@ -8,6 +8,7 @@ from app.core.config import Settings
 from app.preprocessing.pipeline import prepare_page
 from app.preprocessing.validator import ImageValidationError
 from app.schemas.image import ImageSourceMetadata, PageDescriptor
+from app.schemas.storage import MinioPageRequest
 from app.storage.minio_service import (
     MinioConfigurationError,
     MinioObjectNotFound,
@@ -47,6 +48,19 @@ def parse_page_descriptors(raw: str | None, count: int) -> list[PageDescriptor]:
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"invalid page metadata: {exc}") from exc
 
+
+
+def minio_page_descriptor(item: MinioPageRequest) -> PageDescriptor:
+    """Build one MinIO page descriptor without dropping optional source metadata."""
+    metadata = dict(item.metadata)
+    if item.native_text is not None:
+        metadata["_pdf_text"] = item.native_text.model_dump(mode="json")
+    return PageDescriptor(
+        page_id=item.page_id,
+        page_number=item.page_number,
+        filename=item.filename,
+        metadata=metadata,
+    )
 
 def prepare_page_bytes(
     *,

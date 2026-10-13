@@ -158,6 +158,35 @@ async def test_minio_inspection_endpoint_runs_all_three_models(monkeypatch):
     }
 
 
+async def test_minio_inspection_preserves_native_pdf_metadata(monkeypatch):
+    mock_minio(monkeypatch)
+    payload = minio_payload("doc_native_inspect")
+    payload["pages"][0]["native_text"] = {
+        "page_number": 1,
+        "width": 1200,
+        "height": 1800,
+        "blocks": [
+            {"text": "متن بومی", "bbox": {"x1": 100, "y1": 100, "x2": 500, "y2": 200}}
+        ],
+        "image_regions": [
+            {"x1": 20, "y1": 20, "x2": 120, "y2": 120}
+        ],
+    }
+    async with api_client() as client:
+        response = await client.post(
+            "/api/v1/extract/minio/inspect?module=figure_table",
+            json=payload,
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert "_pdf_text" not in body["pages"][0]["page_metadata"]
+    assert any(
+        obj["provenance"]["backend"] == "pdf_source"
+        for obj in body["pages"][0]["objects"]
+    )
+
+
 async def test_minio_inspection_can_select_one_module(monkeypatch):
     mock_minio(monkeypatch)
     payload = minio_payload("doc_minio_figure")

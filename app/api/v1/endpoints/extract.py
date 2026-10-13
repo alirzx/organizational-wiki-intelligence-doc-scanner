@@ -3,6 +3,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 
 from app.api.v1.request_parsing import (
+    minio_page_descriptor,
     parse_json_object,
     parse_page_descriptors,
     prepare_minio_page,
@@ -18,7 +19,6 @@ from app.core.runtime import (
 )
 from app.jobs.tasks import process_minio_document
 from app.schemas.extraction import DocumentExtractionResponse
-from app.schemas.image import PageDescriptor
 from app.schemas.status import ModuleName, ProcessingState
 from app.schemas.storage import ExtractionJobResponse, MinioDocumentRequest
 from app.security import verify_backend_api_key
@@ -54,12 +54,7 @@ async def _prepare_minio_pages(payload: MinioDocumentRequest):
     _validate_minio_request(payload)
     pages = []
     for index, item in enumerate(payload.pages, start=1):
-        descriptor = PageDescriptor(
-            page_id=item.page_id,
-            page_number=item.page_number,
-            filename=item.filename,
-            metadata=item.metadata,
-        )
+        descriptor = minio_page_descriptor(item)
         pages.append(
             await prepare_minio_page(
                 image_url=item.image_url,

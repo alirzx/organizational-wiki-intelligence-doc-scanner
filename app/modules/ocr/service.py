@@ -193,11 +193,31 @@ class OCRService:
         started = perf_counter()
 
         def predict():
-            if self._fallback is None:
-                self._fallback = PaddleOCRBackend(self.settings)
-            return recover_native_text(page, self._fallback, self._backend, figures)
+            # Native-PDF verification needs independent detection geometry. Reuse
+            # the selected Paddle backend when Paddle is primary; otherwise keep a
+            # dedicated Paddle verifier while preserving the configured recovery
+            # backend (DeepSeek, Paddle, or Bina).
+            if isinstance(self._backend, PaddleOCRBackend):
+                verifier = self._backend
+            else:
+                if self._fallback is None:
+                    self._fallback = PaddleOCRBackend(self.settings)
+                verifier = self._fallback
+            return recover_native_text(
+                page,
+                verifier,
+                self._backend,
+                figures,
+                allow_classic_fallback=self.settings.vlm_classic_fallback,
+            )
 
         objects, warnings = await run_blocking(BlockingPool.OCR, predict)
+        recovery_backends = sorted({
+            obj.provenance.backend
+            for obj in objects
+            if obj.provenance.backend != "pdf_text"
+        })
+        hybrid = bool(recovery_backends)
         return ModulePageResponse(
             schema_version=self.settings.schema_version,
             request_id=request_id,
@@ -209,9 +229,15 @@ class OCRService:
             transform=page.transform,
             objects=objects,
             status=ModuleStatus(
-                module=ModuleName.OCR, state=ProcessingState.SUCCESS,
+                module=ModuleName.OCR,
+                state=ProcessingState.SUCCESS,
                 duration_ms=(perf_counter() - started) * 1000,
-                backend="pdf_text", model_id="pdf-text-layer",
+                backend="pdf_hybrid" if hybrid else "pdf_text",
+                model_id=(
+                    "pdf-text-layer+" + "+".join(recovery_backends)
+                    if hybrid
+                    else "pdf-text-layer"
+                ),
                 warnings=warnings + ([] if objects else ["no_text_detected"]),
             ),
         )

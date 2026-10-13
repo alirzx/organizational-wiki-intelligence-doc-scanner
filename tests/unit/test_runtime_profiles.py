@@ -45,3 +45,15 @@ def test_cpu_runtime_rejects_active_gpu_device(field, value):
     kwargs[field] = value
     with pytest.raises(ValidationError, match="MODEL_RUNTIME=cpu"):
         Settings(_env_file=None, **kwargs)
+
+
+def test_cpu_vlm_runtime_rejects_gpu_paddle_device_used_by_hybrid_verifier():
+    with pytest.raises(ValidationError, match="WIKI_HAMI_OCR_DEVICE"):
+        Settings(
+            _env_file=None,
+            model_runtime="cpu",
+            text_extraction_mode="vlm",
+            ocr_device="gpu:0",
+            figure_table_backend="mock",
+            stamp_signature_backend="mock",
+        )
